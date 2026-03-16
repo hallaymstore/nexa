@@ -1,0 +1,313 @@
+{
+  "users": [
+    {
+      "followers": [],
+      "following": [],
+      "followersCount": 0,
+      "followingCount": 0,
+      "isAdmin": false,
+      "isBlocked": false,
+      "_id": "69b8210c2edd49c9b5366e01",
+      "username": "demo",
+      "fullName": "Demo Foydalanuvchi",
+      "email": "demo@nexa.uz",
+      "passwordHash": "$2a$10$HOiG1OaVB7FPJoqGnbrmo.sUDd1BqYWIsR6R6c72PPxzgFdo.IcFG",
+      "bio": "NEXA demo profili. Edit paytida UI va oqimlarni ko'rish uchun.",
+      "avatar": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=900&q=80",
+      "walletBalance": 0.0155,
+      "createdAt": "2026-03-02T15:26:04.305Z"
+    },
+    {
+      "followers": [],
+      "following": [],
+      "followersCount": 0,
+      "followingCount": 0,
+      "isAdmin": false,
+      "isBlocked": false,
+      "_id": "69b8210c2edd49c9b5366e02",
+      "username": "aziza",
+      "fullName": "Aziza Nur",
+      "email": "aziza@nexa.uz",
+      "passwordHash": "$2a$10$HOiG1OaVB7FPJoqGnbrmo.sUDd1BqYWIsR6R6c72PPxzgFdo.IcFG",
+      "bio": "Minimal kadrlar, sayohat va kundalik ilhom.",
+      "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=900&q=80",
+      "walletBalance": 0.0335,
+      "createdAt": "2026-02-26T15:26:04.305Z"
+    },
+    {
+      "followers": [],
+      "following": [],
+      "followersCount": 0,
+      "followingCount": 0,
+      "isAdmin": false,
+      "isBlocked": false,
+      "_id": "69b8210c2edd49c9b5366e03",
+      "username": "sardor",
+      "fullName": "Sardor Karim",
+      "email": "sardor@nexa.uz",
+      "passwordHash": "$2a$10$HOiG1OaVB7FPJoqGnbrmo.sUDd1BqYWIsR6R6c72PPxzgFdo.IcFG",
+      "bio": "Shahar ritmi, coffee spotlar va street-photo.",
+      "avatar": "https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=900&q=80",
+      "walletBalance": 0.0205,
+      "createdAt": "2026-03-06T15:26:04.305Z"
+    },
+    {
+      "followers": [],
+      "following": [],
+      "followersCount": 0,
+      "followingCount": 0,
+      "isAdmin": true,
+      "isBlocked": false,
+      "_id": "69b82a36df992385c3b294cd",
+      "username": "admin",
+      "fullName": "Platform Admin",
+      "email": "admin@nexa.uz",
+      "passwordHash": "$2a$10$f7e/.PreHKUwXTsAPgOVLuqOq.kESrztlCm.7cUzTba7eTv6gYWB6",
+      "bio": "Platforma nazorati, statistika va moderatsiya.",
+      "avatar": "https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&w=900&q=80",
+      "walletBalance": 0,
+      "createdAt": "2026-03-16T16:05:10.165Z"
+    }
+  ],
+  "posts": [
+    {
+      "_id": "69b8210c2edd49c9b5366e04",
+      "author": "69b8210c2edd49c9b5366e02",
+      "caption": "Tonggi yorug'lik bilan eski shahar ko'chalari yanada chiroyli ko'rinadi.",
+      "images": [
+        "https://images.unsplash.com/photo-1514565131-fce0801e5785?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1512453979798-5ea266f8880c?auto=format&fit=crop&w=1200&q=80"
+      ],
+      "tags": [
+        "toshkent",
+        "tong",
+        "sayohat"
+      ],
+      "likesCount": 1,
+      "likedBy": [
+        "69b8210c2edd49c9b5366e01"
+      ],
+      "commentsCount": 2,
+      "adViewsCount": 52,
+      "adRevenue": 0.026,
+      "createdAt": "2026-03-16T14:21:04.305Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366e05",
+      "author": "69b8210c2edd49c9b5366e03",
+      "caption": "Bugungi coffee stop. Yorug'lik, faktura va jimjit vibe.",
+      "images": [
+        "https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1445116572660-236099ec97a0?auto=format&fit=crop&w=1200&q=80",
+        "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=1200&q=80"
+      ],
+      "tags": [
+        "coffee",
+        "city",
+        "minimal"
+      ],
+      "likesCount": 1,
+      "likedBy": [
+        "69b8210c2edd49c9b5366e01"
+      ],
+      "commentsCount": 1,
+      "adViewsCount": 28,
+      "adRevenue": 0.014,
+      "createdAt": "2026-03-16T11:26:04.305Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366e06",
+      "author": "69b8210c2edd49c9b5366e01",
+      "caption": "Edit vaqtida feed ko'rinishi uchun test post. UI o'zgarishlarini shu yerda tez ko'rishingiz mumkin.",
+      "images": [
+        "https://images.unsplash.com/photo-1526045431048-f857369baa09?auto=format&fit=crop&w=1200&q=80"
+      ],
+      "tags": [
+        "demo",
+        "ui",
+        "test"
+      ],
+      "likesCount": 3,
+      "likedBy": [
+        "69b8210c2edd49c9b5366e02",
+        "69b8210c2edd49c9b5366e03",
+        "69b8210c2edd49c9b5366e01"
+      ],
+      "commentsCount": 3,
+      "adViewsCount": 17,
+      "adRevenue": 0.0085,
+      "createdAt": "2026-03-16T15:14:04.305Z"
+    }
+  ],
+  "comments": [
+    {
+      "_id": "69b8210c2edd49c9b5366e07",
+      "post": "69b8210c2edd49c9b5366e04",
+      "author": "69b8210c2edd49c9b5366e01",
+      "text": "Kompozitsiya juda toza chiqibdi.",
+      "likesCount": 1,
+      "likedBy": [
+        "69b8210c2edd49c9b5366e02"
+      ],
+      "parentComment": null,
+      "createdAt": "2026-03-16T14:46:04.305Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366e08",
+      "post": "69b8210c2edd49c9b5366e04",
+      "author": "69b8210c2edd49c9b5366e02",
+      "text": "Rahmat, tongda olish eng yoqqan paytim.",
+      "likesCount": 0,
+      "likedBy": [],
+      "parentComment": null,
+      "createdAt": "2026-03-16T14:58:04.305Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366e09",
+      "post": "69b8210c2edd49c9b5366e05",
+      "author": "69b8210c2edd49c9b5366e01",
+      "text": "Bu joy qayerda? Juda yoqimli ekan.",
+      "likesCount": 0,
+      "likedBy": [],
+      "parentComment": null,
+      "createdAt": "2026-03-16T14:31:04.305Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366e0a",
+      "post": "69b8210c2edd49c9b5366e06",
+      "author": "69b8210c2edd49c9b5366e02",
+      "text": "Fallback rejim uchun zo'r ko'rinmoqda.",
+      "likesCount": 1,
+      "likedBy": [
+        "69b8210c2edd49c9b5366e01"
+      ],
+      "parentComment": null,
+      "createdAt": "2026-03-16T15:18:04.305Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366e0b",
+      "post": "69b8210c2edd49c9b5366e06",
+      "author": "69b8210c2edd49c9b5366e03",
+      "text": "Ha, endi Mongo bo'lmasa ham preview qilsa bo'ladi.",
+      "likesCount": 1,
+      "likedBy": [
+        "69b8210c2edd49c9b5366e01"
+      ],
+      "parentComment": null,
+      "createdAt": "2026-03-16T15:20:04.305Z"
+    },
+    {
+      "_id": "69b821a2ead5330710094f79",
+      "post": "69b8210c2edd49c9b5366e06",
+      "author": "69b8210c2edd49c9b5366e01",
+      "text": "chotkli",
+      "likesCount": 1,
+      "likedBy": [
+        "69b8210c2edd49c9b5366e01"
+      ],
+      "parentComment": "69b8210c2edd49c9b5366e0a",
+      "createdAt": "2026-03-16T15:28:34.833Z"
+    }
+  ],
+  "ads": [
+    {
+      "_id": "69b8210c2edd49c9b5366dfd",
+      "title": "Safar uchun qulay sumka",
+      "image": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=1200&q=80",
+      "text": "Yengil, zamonaviy va kundalik hayotga mos premium backpack kolleksiyasi.",
+      "ctaText": "Ko'rish",
+      "ctaLink": "https://example.com/bag",
+      "isActive": true,
+      "createdAt": "2026-03-16T15:26:04.238Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366dfe",
+      "title": "Uy uchun issiq dekor",
+      "image": "https://images.unsplash.com/photo-1505693416388-ac5ce068fe85?auto=format&fit=crop&w=1200&q=80",
+      "text": "Minimal interyer uchun chiroyli va ixcham bezak mahsulotlari.",
+      "ctaText": "Batafsil",
+      "ctaLink": "https://example.com/decor",
+      "isActive": true,
+      "createdAt": "2026-03-16T15:26:04.239Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366dff",
+      "title": "Mobil fotografiya kursi",
+      "image": "https://images.unsplash.com/photo-1516035069371-29a1b244cc32?auto=format&fit=crop&w=1200&q=80",
+      "text": "Telefon bilan professional darajada suratga olishni o'rganing.",
+      "ctaText": "Boshlash",
+      "ctaLink": "https://example.com/photo-course",
+      "isActive": true,
+      "createdAt": "2026-03-16T15:26:04.239Z"
+    },
+    {
+      "_id": "69b8210c2edd49c9b5366e00",
+      "title": "Yangi coffee spot",
+      "image": "https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=1200&q=80",
+      "text": "Toshkent markazidagi yangi qahvaxona. Sokin atmosfera va ajoyib dessert.",
+      "ctaText": "Menyu",
+      "ctaLink": "https://example.com/coffee",
+      "isActive": true,
+      "createdAt": "2026-03-16T15:26:04.239Z"
+    }
+  ],
+  "meta": {
+    "mode": "json",
+    "updatedAt": "2026-03-16T16:53:27.602Z"
+  },
+  "chatRooms": [
+    {
+      "_id": "69b83535040fd265cf171e30",
+      "participants": [
+        "69b82a36df992385c3b294cd",
+        "69b8210c2edd49c9b5366e02"
+      ],
+      "lastMessageText": "salom",
+      "lastMessageAt": "2026-03-16T16:52:11.030Z",
+      "createdAt": "2026-03-16T16:52:05.782Z"
+    },
+    {
+      "_id": "69b833a9075e448c113a54a3",
+      "participants": [
+        "69b8210c2edd49c9b5366e01",
+        "69b8210c2edd49c9b5366e02"
+      ],
+      "lastMessageText": "Test xabar realtime uchun.",
+      "lastMessageAt": "2026-03-16T16:45:31.350Z",
+      "createdAt": "2026-03-16T16:45:29.706Z"
+    }
+  ],
+  "chatMessages": [
+    {
+      "_id": "69b833a9075e448c113a54a4",
+      "room": "69b833a9075e448c113a54a3",
+      "sender": "69b8210c2edd49c9b5366e01",
+      "text": "Assalomu alaykum, yangi platforma juda chiroyli chiqibdi.",
+      "readBy": [
+        "69b8210c2edd49c9b5366e01",
+        "69b8210c2edd49c9b5366e02"
+      ],
+      "createdAt": "2026-03-16T16:45:29.706Z"
+    },
+    {
+      "_id": "69b833ab075e448c113a54a5",
+      "room": "69b833a9075e448c113a54a3",
+      "sender": "69b8210c2edd49c9b5366e01",
+      "text": "Test xabar realtime uchun.",
+      "readBy": [
+        "69b8210c2edd49c9b5366e01"
+      ],
+      "createdAt": "2026-03-16T16:45:31.350Z"
+    },
+    {
+      "_id": "69b8353b040fd265cf171e31",
+      "room": "69b83535040fd265cf171e30",
+      "sender": "69b82a36df992385c3b294cd",
+      "text": "salom",
+      "readBy": [
+        "69b82a36df992385c3b294cd"
+      ],
+      "createdAt": "2026-03-16T16:52:11.030Z"
+    }
+  ]
+}

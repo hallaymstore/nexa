@@ -1,0 +1,7 @@
+UzSocial ishga tushdi: http://localhost:5099
+Ma'lumotlar rejimi: json
+Diqqat: SESSION_SECRET topilmadi, vaqtinchalik dev secret ishlatildi.
+Diqqat: Cloudinary sozlanmagan. Rasm yuklash local /public/uploads ga saqlanadi.
+Fallback JSON: C:\social\fallback-db.json
+Demo login: demo yoki demo@uzsocial.uz | parol: demo123
+Admin login: admin yoki admin@uzsocial.uz | parol: admin123
