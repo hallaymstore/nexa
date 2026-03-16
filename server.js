@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const http = require("http");
 const express = require("express");
 const session = require("express-session");
+const FileStore = require("session-file-store")(session);
 const MongoStore = require("connect-mongo");
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
@@ -20,7 +21,8 @@ const PORT = Number(process.env.PORT || 5000);
 const MAX_IMAGES = 5;
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 const MONEY_STEP = 0.0005;
-const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
+const CHAT_SECRET_VIEW_SECONDS = 10;
+const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
 const MONGODB_URI = process.env.MONGODB_URI || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || "nexa-dev-session";
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
@@ -30,6 +32,7 @@ const GOOGLE_SITE_VERIFICATION = process.env.GOOGLE_SITE_VERIFICATION || "";
 const BING_SITE_VERIFICATION = process.env.BING_SITE_VERIFICATION || "";
 const JSON_DB_PATH = path.join(__dirname, "fallback-db.json");
 const UPLOADS_ROOT = path.join(__dirname, "public", "uploads");
+const SESSIONS_ROOT = path.join(__dirname, "sessions");
 let lastMongoError = "";
 const CLOUDINARY_READY = Boolean(
   process.env.CLOUDINARY_CLOUD_NAME &&
@@ -295,6 +298,58 @@ const adSchema = new mongoose.Schema({
   },
 });
 
+const loginSessionSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+    index: true,
+  },
+  sessionId: {
+    type: String,
+    required: true,
+    unique: true,
+    index: true,
+  },
+  deviceLabel: {
+    type: String,
+    default: "",
+    maxlength: 120,
+  },
+  browserName: {
+    type: String,
+    default: "",
+    maxlength: 60,
+  },
+  osName: {
+    type: String,
+    default: "",
+    maxlength: 60,
+  },
+  userAgent: {
+    type: String,
+    default: "",
+    maxlength: 400,
+  },
+  ipAddress: {
+    type: String,
+    default: "",
+    maxlength: 90,
+  },
+  revokedAt: {
+    type: Date,
+    default: null,
+  },
+  lastSeenAt: {
+    type: Date,
+    default: Date.now,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
 const chatRoomSchema = new mongoose.Schema({
   participants: {
     type: [mongoose.Schema.Types.ObjectId],
@@ -332,13 +387,31 @@ const chatMessageSchema = new mongoose.Schema({
   },
   text: {
     type: String,
-    required: true,
+    default: "",
     maxlength: 1200,
+  },
+  type: {
+    type: String,
+    enum: ["text", "image", "secret_image"],
+    default: "text",
+  },
+  imageUrl: {
+    type: String,
+    default: "",
   },
   readBy: {
     type: [mongoose.Schema.Types.ObjectId],
     ref: "User",
     default: [],
+  },
+  secretOpenedBy: {
+    type: [mongoose.Schema.Types.ObjectId],
+    ref: "User",
+    default: [],
+  },
+  secretExpiresInSeconds: {
+    type: Number,
+    default: CHAT_SECRET_VIEW_SECONDS,
   },
   createdAt: {
     type: Date,
@@ -357,6 +430,7 @@ const User = mongoose.model("User", userSchema);
 const Post = mongoose.model("Post", postSchema);
 const Comment = mongoose.model("Comment", commentSchema);
 const Ad = mongoose.model("Ad", adSchema);
+const LoginSession = mongoose.model("LoginSession", loginSessionSchema);
 const ChatRoom = mongoose.model("ChatRoom", chatRoomSchema);
 const ChatMessage = mongoose.model("ChatMessage", chatMessageSchema);
 
@@ -368,6 +442,7 @@ const sessionConfig = {
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+  rolling: true,
   proxy: IS_PRODUCTION,
   cookie: {
     httpOnly: true,
@@ -381,6 +456,12 @@ if (DB_MODE === "mongo") {
   sessionConfig.store = MongoStore.create({
     mongoUrl: MONGODB_URI,
     collectionName: "sessions",
+  });
+} else {
+  sessionConfig.store = new FileStore({
+    path: SESSIONS_ROOT,
+    ttl: Math.floor(SESSION_TTL / 1000),
+    retries: 0,
   });
 }
 
@@ -414,6 +495,15 @@ const postUpload = multer({
 });
 
 const avatarUpload = multer({
+  storage: memoryStorage,
+  fileFilter: imageFilter,
+  limits: {
+    fileSize: MAX_IMAGE_SIZE,
+    files: 1,
+  },
+});
+
+const chatImageUpload = multer({
   storage: memoryStorage,
   fileFilter: imageFilter,
   limits: {
@@ -581,6 +671,18 @@ function saveSession(req) {
   });
 }
 
+function regenerateSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 function destroySession(req) {
   return new Promise((resolve, reject) => {
     req.session.destroy((error) => {
@@ -591,6 +693,320 @@ function destroySession(req) {
       resolve();
     });
   });
+}
+
+function extractClientIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+  const source = forwarded || req.ip || req.socket?.remoteAddress || "";
+  return String(source).replace(/^::ffff:/, "");
+}
+
+function detectBrowserName(userAgent = "") {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes("edg/")) return "Edge";
+  if (ua.includes("opr/") || ua.includes("opera")) return "Opera";
+  if (ua.includes("chrome/")) return "Chrome";
+  if (ua.includes("firefox/")) return "Firefox";
+  if (ua.includes("safari/") && !ua.includes("chrome/")) return "Safari";
+  if (ua.includes("msie") || ua.includes("trident/")) return "Internet Explorer";
+  return "Brauzer";
+}
+
+function detectOsName(userAgent = "") {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes("windows")) return "Windows";
+  if (ua.includes("android")) return "Android";
+  if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) return "iOS";
+  if (ua.includes("mac os")) return "macOS";
+  if (ua.includes("linux")) return "Linux";
+  return "Noma'lum OS";
+}
+
+function detectDeviceType(userAgent = "") {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes("ipad") || ua.includes("tablet")) return "Planshet";
+  if (ua.includes("mobi") || ua.includes("android") || ua.includes("iphone")) return "Telefon";
+  return "Kompyuter";
+}
+
+function buildDeviceDetails(userAgent = "") {
+  const browserName = detectBrowserName(userAgent);
+  const osName = detectOsName(userAgent);
+  const deviceType = detectDeviceType(userAgent);
+
+  return {
+    browserName,
+    osName,
+    deviceType,
+    deviceLabel: `${deviceType} · ${browserName} · ${osName}`,
+  };
+}
+
+function serializeIpAddress(ipAddress = "") {
+  if (!ipAddress) {
+    return "";
+  }
+
+  if (ipAddress.includes(".")) {
+    const parts = ipAddress.split(".");
+    if (parts.length === 4) {
+      return `${parts[0]}.${parts[1]}.${parts[2]}.*`;
+    }
+  }
+
+  if (ipAddress.includes(":")) {
+    const parts = ipAddress.split(":").filter(Boolean);
+    return `${parts.slice(0, 3).join(":")}:*`;
+  }
+
+  return ipAddress;
+}
+
+function buildLoginSessionPayload(req, userId) {
+  const userAgent = sanitizeText(req.headers["user-agent"] || "", 400);
+  const device = buildDeviceDetails(userAgent);
+  const now = new Date();
+
+  return {
+    user: String(userId),
+    sessionId: String(req.sessionID || ""),
+    userAgent,
+    ipAddress: extractClientIp(req),
+    deviceLabel: device.deviceLabel,
+    browserName: device.browserName,
+    osName: device.osName,
+    lastSeenAt: now,
+    createdAt: now,
+    revokedAt: null,
+  };
+}
+
+function isLoginSessionActive(entry) {
+  if (!entry || entry.revokedAt) {
+    return false;
+  }
+
+  const lastSeen = new Date(entry.lastSeenAt || entry.createdAt || 0).getTime();
+  return Date.now() - lastSeen <= SESSION_TTL;
+}
+
+function serializeLoginSession(entry, currentSessionId) {
+  if (!entry) {
+    return null;
+  }
+
+  const source = entry.toObject ? entry.toObject() : entry;
+  const isCurrent = String(source.sessionId) === String(currentSessionId);
+  return {
+    id: String(source._id || source.id || source.sessionId),
+    sessionId: String(source.sessionId || ""),
+    deviceLabel: source.deviceLabel || "Qurilma",
+    browserName: source.browserName || "Brauzer",
+    osName: source.osName || "OS",
+    ipAddress: serializeIpAddress(source.ipAddress || ""),
+    isCurrent,
+    isOtherDevice: !isCurrent,
+    createdAt: source.createdAt,
+    lastSeenAt: source.lastSeenAt,
+  };
+}
+
+async function upsertLoginSession(req, userId) {
+  const payload = buildLoginSessionPayload(req, userId);
+
+  if (!payload.sessionId) {
+    return null;
+  }
+
+  if (DB_MODE === "json") {
+    await loadJsonDb();
+    let sessionEntry = jsonDb.loginSessions.find(
+      (entry) => String(entry.sessionId) === String(payload.sessionId)
+    );
+
+    if (!sessionEntry) {
+      sessionEntry = {
+        _id: generateId(),
+        ...payload,
+      };
+      jsonDb.loginSessions.push(sessionEntry);
+    } else {
+      Object.assign(sessionEntry, {
+        ...payload,
+        createdAt: sessionEntry.createdAt || payload.createdAt,
+      });
+    }
+
+    await persistJsonDb();
+    return sessionEntry;
+  }
+
+  return LoginSession.findOneAndUpdate(
+    { sessionId: payload.sessionId },
+    {
+      $set: {
+        user: payload.user,
+        deviceLabel: payload.deviceLabel,
+        browserName: payload.browserName,
+        osName: payload.osName,
+        userAgent: payload.userAgent,
+        ipAddress: payload.ipAddress,
+        lastSeenAt: payload.lastSeenAt,
+        revokedAt: null,
+      },
+      $setOnInsert: {
+        createdAt: payload.createdAt,
+      },
+    },
+    {
+      upsert: true,
+      new: true,
+      setDefaultsOnInsert: true,
+    }
+  );
+}
+
+async function findLoginSessionBySessionId(sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+
+  if (DB_MODE === "json") {
+    await loadJsonDb();
+    return (
+      jsonDb.loginSessions.find((entry) => String(entry.sessionId) === String(sessionId)) || null
+    );
+  }
+
+  return LoginSession.findOne({ sessionId });
+}
+
+async function revokeLoginSessionBySessionId(sessionId) {
+  if (!sessionId) {
+    return;
+  }
+
+  if (DB_MODE === "json") {
+    await loadJsonDb();
+    let changed = false;
+    jsonDb.loginSessions = (jsonDb.loginSessions || []).map((entry) => {
+      if (String(entry.sessionId) === String(sessionId) && !entry.revokedAt) {
+        changed = true;
+        return {
+          ...entry,
+          revokedAt: new Date().toISOString(),
+        };
+      }
+      return entry;
+    });
+    if (changed) {
+      await persistJsonDb();
+    }
+    return;
+  }
+
+  await LoginSession.updateOne(
+    { sessionId },
+    {
+      $set: {
+        revokedAt: new Date(),
+      },
+    }
+  );
+}
+
+async function revokeOtherLoginSessions(userId, currentSessionId) {
+  if (DB_MODE === "json") {
+    await loadJsonDb();
+    let changed = false;
+    jsonDb.loginSessions = (jsonDb.loginSessions || []).map((entry) => {
+      if (
+        String(entry.user) === String(userId) &&
+        String(entry.sessionId) !== String(currentSessionId) &&
+        !entry.revokedAt
+      ) {
+        changed = true;
+        return {
+          ...entry,
+          revokedAt: new Date().toISOString(),
+        };
+      }
+      return entry;
+    });
+    if (changed) {
+      await persistJsonDb();
+    }
+    return;
+  }
+
+  await LoginSession.updateMany(
+    {
+      user: userId,
+      sessionId: { $ne: currentSessionId },
+      revokedAt: null,
+    },
+    {
+      $set: {
+        revokedAt: new Date(),
+      },
+    }
+  );
+}
+
+async function getUserLoginSessions(userId, currentSessionId) {
+  if (DB_MODE === "json") {
+    await loadJsonDb();
+    return (jsonDb.loginSessions || [])
+      .filter((entry) => String(entry.user) === String(userId))
+      .filter(isLoginSessionActive)
+      .sort((left, right) => new Date(right.lastSeenAt) - new Date(left.lastSeenAt))
+      .map((entry) => serializeLoginSession(entry, currentSessionId));
+  }
+
+  const sessions = await LoginSession.find({
+    user: userId,
+    revokedAt: null,
+    lastSeenAt: { $gte: new Date(Date.now() - SESSION_TTL) },
+  }).sort({ lastSeenAt: -1 });
+
+  return sessions.map((entry) => serializeLoginSession(entry, currentSessionId));
+}
+
+async function getSecurityOverview(userId, currentSessionId) {
+  const sessions = await getUserLoginSessions(userId, currentSessionId);
+  const hasOtherActiveSessions = sessions.some((entry) => entry.isOtherDevice);
+
+  return {
+    activeSessions: sessions,
+    hasOtherActiveSessions,
+    passwordChangeRecommended: hasOtherActiveSessions,
+    recommendation: hasOtherActiveSessions
+      ? "Hisobingiz boshqa qurilmada ham ochiq. Ularni chiqarib yuborish va parolni yangilash tavsiya etiladi."
+      : "Hisob faqat shu qurilmada faol ko'rinmoqda.",
+  };
+}
+
+async function ensureActiveLoginSession(req, user) {
+  const currentSessionId = String(req.sessionID || "");
+  if (!currentSessionId) {
+    return { valid: false };
+  }
+
+  const existing = await findLoginSessionBySessionId(currentSessionId);
+
+  if (existing && String(existing.user?._id || existing.user) !== String(user._id || user.id)) {
+    await revokeLoginSessionBySessionId(currentSessionId);
+    return { valid: false };
+  }
+
+  if (existing && !isLoginSessionActive(existing)) {
+    return { valid: false };
+  }
+
+  const record = await upsertLoginSession(req, user._id || user.id || user);
+  return { valid: Boolean(record), record };
 }
 
 function mongoStateLabel(readyState) {
@@ -642,6 +1058,15 @@ async function requireAuth(req, res, next) {
   if (user.isBlocked) {
     req.session.destroy(() => {});
     res.status(403).json({ message: "Hisobingiz vaqtincha cheklangan." });
+    return;
+  }
+
+  const sessionState = await ensureActiveLoginSession(req, user);
+  if (!sessionState.valid) {
+    req.session.destroy(() => {});
+    res.status(401).json({
+      message: "Bu sessiya boshqa joydan yopilgan. Qayta kiring va xavfsizlikni tekshiring.",
+    });
     return;
   }
 
@@ -925,6 +1350,28 @@ function jsonPopulateChatMessage(message) {
   };
 }
 
+function normalizeChatMessageType(message) {
+  if (message?.type === "image" || message?.type === "secret_image") {
+    return message.type;
+  }
+  return message?.imageUrl ? "image" : "text";
+}
+
+function chatMessagePreviewText(message) {
+  const type = normalizeChatMessageType(message);
+  const text = sanitizeText(message?.text || "", 120);
+
+  if (type === "secret_image") {
+    return text ? `Sirli rasm: ${text}` : "Sirli rasm yuborildi";
+  }
+
+  if (type === "image") {
+    return text ? `Rasm: ${text}` : "Rasm yuborildi";
+  }
+
+  return text;
+}
+
 function roomParticipantIds(room) {
   const source = room?.toObject ? room.toObject() : room;
   return Array.isArray(source?.participants)
@@ -963,13 +1410,33 @@ function serializeChatRoom(room, viewerId, unreadCount = 0) {
 
 function serializeChatMessage(message, viewerId) {
   const source = message.toObject ? message.toObject() : message;
+  const senderId = String(source.sender?._id || source.sender);
+  const type = normalizeChatMessageType(source);
+  const secretOpenedBy = Array.isArray(source.secretOpenedBy)
+    ? source.secretOpenedBy.map((entry) => String(entry))
+    : [];
+  const isMine = senderId === String(viewerId);
+  const viewedByUser = viewerId ? secretOpenedBy.includes(String(viewerId)) : false;
+
   return {
     id: String(source._id || source.id),
     roomId: String(source.room?._id || source.room),
-    text: source.text,
+    type,
+    text: source.text || "",
+    imageUrl:
+      type === "image" || (type === "secret_image" && isMine) ? source.imageUrl || "" : "",
     createdAt: source.createdAt,
-    isMine: String(source.sender?._id || source.sender) === String(viewerId),
+    isMine,
     sender: serializeUser(source.sender, { viewerId }),
+    secret:
+      type === "secret_image"
+        ? {
+            canOpen: !isMine && !viewedByUser,
+            viewed: !isMine && viewedByUser,
+            openedCount: secretOpenedBy.length,
+            expiresInSeconds: Number(source.secretExpiresInSeconds || CHAT_SECRET_VIEW_SECONDS),
+          }
+        : null,
   };
 }
 
@@ -1202,13 +1669,195 @@ async function getChatRoomsForUser(viewerId) {
   return payload;
 }
 
-async function createChatMessageForRoom(roomId, senderId, rawText) {
-  const text = sanitizeMultiline(rawText, 1200);
-  if (!text) {
+function normalizeChatMessagePayload(rawPayload, file) {
+  if (typeof rawPayload === "string") {
+    return {
+      type: "text",
+      text: sanitizeMultiline(rawPayload, 1200),
+    };
+  }
+
+  const requestedType =
+    rawPayload?.type === "secret_image" || rawPayload?.secret === true || rawPayload?.secret === "true"
+      ? "secret_image"
+      : rawPayload?.type === "image"
+        ? "image"
+        : file
+          ? "image"
+          : "text";
+
+  return {
+    type: requestedType,
+    text: sanitizeMultiline(rawPayload?.text || "", 1200),
+  };
+}
+
+function ensureValidChatPayload(payload, file) {
+  if (payload.type === "text" && !payload.text) {
     const error = new Error("Xabar matnini kiriting.");
     error.status = 400;
     throw error;
   }
+
+  if ((payload.type === "image" || payload.type === "secret_image") && !file) {
+    const error = new Error("Chat uchun rasm tanlang.");
+    error.status = 400;
+    throw error;
+  }
+}
+
+function buildSerializedChatMessageForUser(messageRecord, viewerId) {
+  return serializeChatMessage(messageRecord, viewerId);
+}
+
+function emitChatRoomUpdate(room, messageRecord) {
+  const participantIds = roomParticipantIds(room);
+  const roomId = String(room._id || room.id);
+
+  participantIds.forEach((participantId) => {
+    io.to(`user:${participantId}`).emit("chat:room-updated", { roomId });
+    if (messageRecord) {
+      io.to(`user:${participantId}`).emit("chat:new-message", {
+        roomId,
+        message: buildSerializedChatMessageForUser(messageRecord, participantId),
+      });
+    }
+  });
+}
+
+function emitChatMessageUpdated(room, messageRecord) {
+  const participantIds = roomParticipantIds(room);
+  const roomId = String(room._id || room.id);
+
+  participantIds.forEach((participantId) => {
+    io.to(`user:${participantId}`).emit("chat:message-updated", {
+      roomId,
+      message: buildSerializedChatMessageForUser(messageRecord, participantId),
+    });
+  });
+}
+
+async function getChatMessageForUser(messageId, viewerId) {
+  if (!isObjectId(messageId)) {
+    return null;
+  }
+
+  if (DB_MODE === "json") {
+    await loadJsonDb();
+    const message = jsonDb.chatMessages.find((entry) => String(entry._id) === String(messageId));
+    if (!message) {
+      return null;
+    }
+
+    const room = await getChatRoomForUser(message.room, viewerId);
+    if (!room) {
+      return null;
+    }
+
+    return {
+      room,
+      message: jsonPopulateChatMessage(message),
+    };
+  }
+
+  const message = await ChatMessage.findById(messageId).populate(
+    "sender",
+    "username fullName avatar bio followers following followersCount followingCount walletBalance createdAt"
+  );
+  if (!message) {
+    return null;
+  }
+
+  const room = await getChatRoomForUser(message.room, viewerId);
+  if (!room) {
+    return null;
+  }
+
+  return {
+    room,
+    message,
+  };
+}
+
+async function openSecretChatMessage(messageId, viewerId) {
+  const entry = await getChatMessageForUser(messageId, viewerId);
+  if (!entry) {
+    const error = new Error("Sirli rasm topilmadi.");
+    error.status = 404;
+    throw error;
+  }
+
+  const messageSource = entry.message.toObject ? entry.message.toObject() : entry.message;
+  const senderId = String(messageSource.sender?._id || messageSource.sender);
+  const type = normalizeChatMessageType(messageSource);
+  const openedBy = Array.isArray(messageSource.secretOpenedBy)
+    ? messageSource.secretOpenedBy.map((item) => String(item))
+    : [];
+
+  if (type !== "secret_image") {
+    const error = new Error("Bu xabar sirli rasm emas.");
+    error.status = 400;
+    throw error;
+  }
+
+  if (senderId === String(viewerId)) {
+    const error = new Error("Yuborilgan sirli rasmni qayta ochib bo'lmaydi.");
+    error.status = 403;
+    throw error;
+  }
+
+  if (openedBy.includes(String(viewerId))) {
+    const error = new Error("Bu sirli rasm allaqachon ko'rilgan.");
+    error.status = 410;
+    throw error;
+  }
+
+  if (DB_MODE === "json") {
+    await loadJsonDb();
+    const message = jsonDb.chatMessages.find((item) => String(item._id) === String(messageId));
+    message.secretOpenedBy = [...new Set([...(message.secretOpenedBy || []), String(viewerId)])];
+    await persistJsonDb();
+
+    const updatedMessage = jsonPopulateChatMessage(message);
+    const room = await getChatRoomForUser(message.room, viewerId);
+    emitChatMessageUpdated(room, updatedMessage);
+
+    return {
+      room,
+      message: serializeChatMessage(updatedMessage, viewerId),
+      imageUrl: message.imageUrl,
+      expiresAt: new Date(Date.now() + CHAT_SECRET_VIEW_SECONDS * 1000).toISOString(),
+      ttlSeconds: CHAT_SECRET_VIEW_SECONDS,
+    };
+  }
+
+  await ChatMessage.updateOne(
+    { _id: messageId },
+    {
+      $addToSet: {
+        secretOpenedBy: viewerId,
+      },
+    }
+  );
+
+  const updatedMessage = await ChatMessage.findById(messageId).populate(
+    "sender",
+    "username fullName avatar bio followers following followersCount followingCount walletBalance createdAt"
+  );
+  emitChatMessageUpdated(entry.room, updatedMessage);
+
+  return {
+    room: entry.room,
+    message: serializeChatMessage(updatedMessage, viewerId),
+    imageUrl: updatedMessage.imageUrl,
+    expiresAt: new Date(Date.now() + CHAT_SECRET_VIEW_SECONDS * 1000).toISOString(),
+    ttlSeconds: CHAT_SECRET_VIEW_SECONDS,
+  };
+}
+
+async function createChatMessageForRoom(roomId, senderId, rawPayload, file = null) {
+  const payload = normalizeChatMessagePayload(rawPayload, file);
+  ensureValidChatPayload(payload, file);
 
   const room = await getChatRoomForUser(roomId, senderId);
   if (!room) {
@@ -1217,41 +1866,61 @@ async function createChatMessageForRoom(roomId, senderId, rawText) {
     throw error;
   }
 
+  const imageUrl = file
+    ? (await uploadImage(
+        file,
+        payload.type === "secret_image" ? "nexa/chat-secret" : "nexa/chat"
+      )).secure_url
+    : "";
+  const previewText = chatMessagePreviewText({
+    type: payload.type,
+    text: payload.text,
+    imageUrl,
+  });
+
   if (DB_MODE === "json") {
     await loadJsonDb();
     const message = {
       _id: generateId(),
       room: String(roomId),
       sender: String(senderId),
-      text,
+      text: payload.text,
+      type: payload.type,
+      imageUrl,
       readBy: [String(senderId)],
+      secretOpenedBy: [],
+      secretExpiresInSeconds: CHAT_SECRET_VIEW_SECONDS,
       createdAt: new Date().toISOString(),
     };
     jsonDb.chatMessages.push(message);
     const sourceRoom = jsonDb.chatRooms.find((entry) => String(entry._id) === String(roomId));
     if (sourceRoom) {
-      sourceRoom.lastMessageText = text;
+      sourceRoom.lastMessageText = previewText;
       sourceRoom.lastMessageAt = message.createdAt;
     }
     await persistJsonDb();
     return {
       room: jsonPopulateChatRoom(sourceRoom || room),
-      message: serializeChatMessage(jsonPopulateChatMessage(message), senderId),
+      messageRecord: jsonPopulateChatMessage(message),
     };
   }
 
   const message = await ChatMessage.create({
     room: roomId,
     sender: senderId,
-    text,
+    text: payload.text,
+    type: payload.type,
+    imageUrl,
     readBy: [senderId],
+    secretOpenedBy: [],
+    secretExpiresInSeconds: CHAT_SECRET_VIEW_SECONDS,
   });
 
   await ChatRoom.updateOne(
     { _id: roomId },
     {
       $set: {
-        lastMessageText: text,
+        lastMessageText: previewText,
         lastMessageAt: message.createdAt,
       },
     }
@@ -1268,7 +1937,7 @@ async function createChatMessageForRoom(roomId, senderId, rawText) {
 
   return {
     room: populatedRoom,
-    message: serializeChatMessage(savedMessage, senderId),
+    messageRecord: savedMessage,
   };
 }
 
@@ -1355,6 +2024,7 @@ function createEmptyJsonDb() {
     posts: [],
     comments: [],
     ads: [],
+    loginSessions: [],
     chatRooms: [],
     chatMessages: [],
     meta: {
@@ -1417,8 +2087,20 @@ function jsonPopulateComment(comment) {
 }
 
 async function seedJsonDbIfNeeded() {
+  jsonDb.loginSessions = Array.isArray(jsonDb.loginSessions) ? jsonDb.loginSessions : [];
   jsonDb.chatRooms = Array.isArray(jsonDb.chatRooms) ? jsonDb.chatRooms : [];
-  jsonDb.chatMessages = Array.isArray(jsonDb.chatMessages) ? jsonDb.chatMessages : [];
+  jsonDb.chatMessages = Array.isArray(jsonDb.chatMessages)
+    ? jsonDb.chatMessages.map((message) => ({
+        type: normalizeChatMessageType(message),
+        text: typeof message.text === "string" ? message.text : "",
+        imageUrl: typeof message.imageUrl === "string" ? message.imageUrl : "",
+        readBy: Array.isArray(message.readBy) ? message.readBy : [],
+        secretOpenedBy: Array.isArray(message.secretOpenedBy) ? message.secretOpenedBy : [],
+        secretExpiresInSeconds:
+          Number(message.secretExpiresInSeconds) || CHAT_SECRET_VIEW_SECONDS,
+        ...message,
+      }))
+    : [];
 
   if (jsonDb.ads.length === 0) {
     jsonDb.ads = DEFAULT_ADS.map((ad) => ({
@@ -1486,7 +2168,11 @@ async function seedJsonDbIfNeeded() {
         room: roomId,
         sender: String(firstUser._id),
         text: "Assalomu alaykum, yangi platforma juda chiroyli chiqibdi.",
+        type: "text",
+        imageUrl: "",
         readBy: [String(firstUser._id), String(secondUser._id)],
+        secretOpenedBy: [],
+        secretExpiresInSeconds: CHAT_SECRET_VIEW_SECONDS,
         createdAt: new Date().toISOString(),
       });
     }
@@ -1702,7 +2388,11 @@ async function seedJsonDbIfNeeded() {
       room: demoRoomId,
       sender: String(demoUser._id),
       text: "Salom, bugungi postlaringiz juda yoqdi.",
+      type: "text",
+      imageUrl: "",
       readBy: [String(demoUser._id), String(azizaUser._id)],
+      secretOpenedBy: [],
+      secretExpiresInSeconds: CHAT_SECRET_VIEW_SECONDS,
       createdAt: new Date(Date.now() - 1000 * 60 * 11).toISOString(),
     },
     {
@@ -1710,7 +2400,11 @@ async function seedJsonDbIfNeeded() {
       room: demoRoomId,
       sender: String(azizaUser._id),
       text: "Rahmat, kechki yorug'lik juda yaxshi tushdi.",
+      type: "text",
+      imageUrl: "",
       readBy: [String(demoUser._id), String(azizaUser._id)],
+      secretOpenedBy: [],
+      secretExpiresInSeconds: CHAT_SECRET_VIEW_SECONDS,
       createdAt: new Date(Date.now() - 1000 * 60 * 6).toISOString(),
     },
     {
@@ -1718,7 +2412,11 @@ async function seedJsonDbIfNeeded() {
       room: demoRoomId,
       sender: String(demoUser._id),
       text: "Bugungi kadrlar juda yorqin chiqibdi.",
+      type: "text",
+      imageUrl: "",
       readBy: [String(demoUser._id)],
+      secretOpenedBy: [],
+      secretExpiresInSeconds: CHAT_SECRET_VIEW_SECONDS,
       createdAt: new Date(Date.now() - 1000 * 60 * 4).toISOString(),
     },
   ];
@@ -1742,8 +2440,20 @@ async function loadJsonDb() {
   jsonDb.posts = Array.isArray(jsonDb.posts) ? jsonDb.posts : [];
   jsonDb.comments = Array.isArray(jsonDb.comments) ? jsonDb.comments : [];
   jsonDb.ads = Array.isArray(jsonDb.ads) ? jsonDb.ads : [];
+  jsonDb.loginSessions = Array.isArray(jsonDb.loginSessions) ? jsonDb.loginSessions : [];
   jsonDb.chatRooms = Array.isArray(jsonDb.chatRooms) ? jsonDb.chatRooms : [];
-  jsonDb.chatMessages = Array.isArray(jsonDb.chatMessages) ? jsonDb.chatMessages : [];
+  jsonDb.chatMessages = Array.isArray(jsonDb.chatMessages)
+    ? jsonDb.chatMessages.map((message) => ({
+        type: normalizeChatMessageType(message),
+        text: typeof message.text === "string" ? message.text : "",
+        imageUrl: typeof message.imageUrl === "string" ? message.imageUrl : "",
+        readBy: Array.isArray(message.readBy) ? message.readBy : [],
+        secretOpenedBy: Array.isArray(message.secretOpenedBy) ? message.secretOpenedBy : [],
+        secretExpiresInSeconds:
+          Number(message.secretExpiresInSeconds) || CHAT_SECRET_VIEW_SECONDS,
+        ...message,
+      }))
+    : [];
 
   await seedJsonDbIfNeeded();
   return jsonDb;
@@ -2383,18 +3093,11 @@ io.on("connection", async (socket) => {
 
   socket.on("chat:send", async (payload = {}) => {
     try {
-      const result = await createChatMessageForRoom(payload.roomId, socket.userId, payload.text);
-      const participantIds = roomParticipantIds(result.room);
-      const roomId = String(result.room._id || result.room.id);
-
-      participantIds.forEach((participantId) => {
-        io.to(`user:${participantId}`).emit("chat:room-updated", { roomId });
+      const result = await createChatMessageForRoom(payload.roomId, socket.userId, {
+        text: payload.text,
+        type: "text",
       });
-
-      io.to(`chat:${roomId}`).emit("chat:new-message", {
-        roomId,
-        message: result.message,
-      });
+      emitChatRoomUpdate(result.room, result.messageRecord);
     } catch (error) {
       socket.emit("chat:error", { message: error.message || "Xabar yuborilmadi." });
     }
@@ -2462,6 +3165,9 @@ async function deleteUserInJson(userId) {
   jsonDb.chatMessages = jsonDb.chatMessages.filter(
     (message) => !chatRoomIdsToDelete.has(String(message.room))
   );
+  jsonDb.loginSessions = (jsonDb.loginSessions || []).filter(
+    (entry) => String(entry.user) !== String(userId)
+  );
 
   jsonDb.posts = jsonDb.posts.map((post) => ({
     ...post,
@@ -2513,6 +3219,7 @@ async function deleteUserInMongo(userId) {
     Comment.deleteMany({ _id: { $in: [...commentsToDelete] } }),
     ChatRoom.deleteMany({ _id: { $in: [...chatRoomIdsToDelete] } }),
     ChatMessage.deleteMany({ room: { $in: [...chatRoomIdsToDelete] } }),
+    LoginSession.deleteMany({ user: userId }),
     User.deleteOne({ _id: userId }),
     Post.updateMany({ likedBy: userId }, { $pull: { likedBy: userId } }),
     Comment.updateMany({ likedBy: userId }, { $pull: { likedBy: userId } }),
@@ -2606,7 +3313,7 @@ async function deleteUserInMongo(userId) {
           update: {
             $set: {
               participants: roomParticipantIds(room).filter((entry) => entry !== String(userId)),
-              lastMessageText: lastMessage?.text || "",
+              lastMessageText: chatMessagePreviewText(lastMessage || {}) || "",
               lastMessageAt: lastMessage?.createdAt || room.createdAt,
             },
           },
@@ -2638,9 +3345,19 @@ app.get("/api/auth/me", async (req, res, next) => {
         return;
       }
 
+      const sessionState = await ensureActiveLoginSession(req, user);
+      if (!sessionState.valid) {
+        req.session.destroy(() => {});
+        res.json({ authenticated: false, user: null });
+        return;
+      }
+
+      const security = await getSecurityOverview(req.session.userId, req.sessionID);
+
       res.json({
         authenticated: true,
         user: serializeUser(user, { includePrivate: true, viewerId: req.session.userId }),
+        security,
       });
       return;
     }
@@ -2652,9 +3369,19 @@ app.get("/api/auth/me", async (req, res, next) => {
       return;
     }
 
+    const sessionState = await ensureActiveLoginSession(req, user);
+    if (!sessionState.valid) {
+      req.session.destroy(() => {});
+      res.json({ authenticated: false, user: null });
+      return;
+    }
+
+    const security = await getSecurityOverview(req.session.userId, req.sessionID);
+
     res.json({
       authenticated: true,
       user: serializeUser(user, { includePrivate: true, viewerId: req.session.userId }),
+      security,
     });
   } catch (error) {
     next(error);
@@ -2724,13 +3451,16 @@ app.post("/api/auth/register", async (req, res, next) => {
       jsonDb.users.push(user);
       await persistJsonDb();
 
+      await regenerateSession(req);
       req.session.userId = String(user._id);
       req.session.countedAdImpressions = [];
       await saveSession(req);
+      await upsertLoginSession(req, user._id);
 
       res.status(201).json({
         message: "Hisob muvaffaqiyatli yaratildi.",
         user: serializeUser(user, { includePrivate: true, viewerId: user._id }),
+        security: await getSecurityOverview(user._id, req.sessionID),
       });
       return;
     }
@@ -2752,13 +3482,16 @@ app.post("/api/auth/register", async (req, res, next) => {
       passwordHash,
     });
 
+    await regenerateSession(req);
     req.session.userId = String(user._id);
     req.session.countedAdImpressions = [];
     await saveSession(req);
+    await upsertLoginSession(req, user._id);
 
     res.status(201).json({
       message: "Hisob muvaffaqiyatli yaratildi.",
       user: serializeUser(user, { includePrivate: true, viewerId: user._id }),
+      security: await getSecurityOverview(user._id, req.sessionID),
     });
   } catch (error) {
     if (error && error.code === 11000) {
@@ -2804,13 +3537,16 @@ app.post("/api/auth/login", async (req, res, next) => {
         return;
       }
 
+      await regenerateSession(req);
       req.session.userId = String(user._id);
       ensureImpressionCache(req);
       await saveSession(req);
+      await upsertLoginSession(req, user._id);
 
       res.json({
         message: "Xush kelibsiz!",
         user: serializeUser(user, { includePrivate: true, viewerId: user._id }),
+        security: await getSecurityOverview(user._id, req.sessionID),
       });
       return;
     }
@@ -2835,13 +3571,16 @@ app.post("/api/auth/login", async (req, res, next) => {
       return;
     }
 
+    await regenerateSession(req);
     req.session.userId = String(user._id);
     ensureImpressionCache(req);
     await saveSession(req);
+    await upsertLoginSession(req, user._id);
 
     res.json({
       message: "Xush kelibsiz!",
       user: serializeUser(user, { includePrivate: true, viewerId: user._id }),
+      security: await getSecurityOverview(user._id, req.sessionID),
     });
   } catch (error) {
     next(error);
@@ -2850,6 +3589,7 @@ app.post("/api/auth/login", async (req, res, next) => {
 
 app.post("/api/auth/logout", async (req, res, next) => {
   try {
+    await revokeLoginSessionBySessionId(req.sessionID);
     await destroySession(req);
     res.clearCookie("nexa.sid");
     res.clearCookie("connect.sid");
@@ -3006,27 +3746,77 @@ app.post("/api/chat/rooms/:id/messages", requireAuth, async (req, res, next) => 
     const result = await createChatMessageForRoom(
       req.params.id,
       req.session.userId,
-      req.body.text
+      {
+        text: req.body.text,
+        type: "text",
+      }
     );
-
-    const participantIds = roomParticipantIds(result.room);
     const serializedRoom = serializeChatRoom(result.room, req.session.userId, 0);
-
-    participantIds.forEach((participantId) => {
-      io.to(`user:${participantId}`).emit("chat:room-updated", {
-        roomId: serializedRoom.id,
-      });
-    });
-
-    io.to(`chat:${serializedRoom.id}`).emit("chat:new-message", {
-      roomId: serializedRoom.id,
-      message: result.message,
-    });
+    emitChatRoomUpdate(result.room, result.messageRecord);
 
     res.status(201).json({
       message: "Xabar yuborildi.",
       room: serializedRoom,
+      chatMessage: serializeChatMessage(result.messageRecord, req.session.userId),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post(
+  "/api/chat/rooms/:id/messages/image",
+  requireAuth,
+  chatImageUpload.single("image"),
+  async (req, res, next) => {
+    try {
+      if (!isObjectId(req.params.id)) {
+        res.status(400).json({ message: "Chat xonasi topilmadi." });
+        return;
+      }
+
+      if (!req.file) {
+        res.status(400).json({ message: "Chat uchun rasm tanlang." });
+        return;
+      }
+
+      const result = await createChatMessageForRoom(
+        req.params.id,
+        req.session.userId,
+        {
+          text: req.body.text,
+          type: req.body.secret === "true" ? "secret_image" : "image",
+        },
+        req.file
+      );
+      const serializedRoom = serializeChatRoom(result.room, req.session.userId, 0);
+      emitChatRoomUpdate(result.room, result.messageRecord);
+
+      res.status(201).json({
+        message: req.body.secret === "true" ? "Sirli rasm yuborildi." : "Rasm yuborildi.",
+        room: serializedRoom,
+        chatMessage: serializeChatMessage(result.messageRecord, req.session.userId),
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.post("/api/chat/messages/:id/open-secret", requireAuth, async (req, res, next) => {
+  try {
+    if (!isObjectId(req.params.id)) {
+      res.status(400).json({ message: "Sirli rasm topilmadi." });
+      return;
+    }
+
+    const result = await openSecretChatMessage(req.params.id, req.session.userId);
+    res.json({
+      message: "Sirli rasm ochildi.",
       chatMessage: result.message,
+      imageUrl: result.imageUrl,
+      expiresAt: result.expiresAt,
+      ttlSeconds: result.ttlSeconds,
     });
   } catch (error) {
     next(error);
@@ -3642,6 +4432,7 @@ app.get("/api/profile/me", requireAuth, async (req, res, next) => {
         jsonDb.posts.filter((post) => String(post.author) === String(user._id))
       ).map((post) => jsonPopulatePost(post));
       const likesTotal = posts.reduce((sum, post) => sum + (post.likesCount || 0), 0);
+      const security = await getSecurityOverview(req.session.userId, req.sessionID);
 
       res.json({
         user: serializeUser(user, { includePrivate: true, viewerId: req.session.userId }),
@@ -3650,6 +4441,7 @@ app.get("/api/profile/me", requireAuth, async (req, res, next) => {
           likesTotal,
           adViewsTotal: posts.reduce((sum, post) => sum + (post.adViewsCount || 0), 0),
         },
+        security,
         posts: posts.map((post) => serializePost(post, req.session.userId)),
       });
       return;
@@ -3666,6 +4458,7 @@ app.get("/api/profile/me", requireAuth, async (req, res, next) => {
       .populate("author", "username fullName avatar bio followersCount followingCount walletBalance createdAt");
 
     const likesTotal = posts.reduce((sum, post) => sum + (post.likesCount || 0), 0);
+    const security = await getSecurityOverview(req.session.userId, req.sessionID);
 
     res.json({
       user: serializeUser(user, { includePrivate: true, viewerId: req.session.userId }),
@@ -3674,6 +4467,7 @@ app.get("/api/profile/me", requireAuth, async (req, res, next) => {
         likesTotal,
         adViewsTotal: posts.reduce((sum, post) => sum + (post.adViewsCount || 0), 0),
       },
+      security,
       posts: posts.map((post) => serializePost(post, req.session.userId)),
     });
   } catch (error) {
@@ -3683,6 +4477,26 @@ app.get("/api/profile/me", requireAuth, async (req, res, next) => {
 
 app.put("/api/profile", requireAuth, avatarUpload.single("avatar"), async (req, res, next) => {
   try {
+    const fullName = sanitizeText(req.body.fullName, 60);
+    const bio = sanitizeMultiline(req.body.bio, 240);
+    const username =
+      typeof req.body.username === "string" && req.body.username.trim()
+        ? normalizeUsername(req.body.username)
+        : "";
+
+    if (!fullName || fullName.length < 3) {
+      res.status(400).json({ message: "To'liq ism kamida 3 ta belgidan iborat bo'lsin." });
+      return;
+    }
+
+    if (username && !isValidUsername(username)) {
+      res.status(400).json({
+        message:
+          "Username 3-20 belgidan iborat bo'lsin va faqat harf, raqam, nuqta yoki pastki chiziq ishlating.",
+      });
+      return;
+    }
+
     if (DB_MODE === "json") {
       await loadJsonDb();
       const user = jsonFindUserById(req.session.userId);
@@ -3691,13 +4505,20 @@ app.put("/api/profile", requireAuth, avatarUpload.single("avatar"), async (req, 
         return;
       }
 
-      const fullName = sanitizeText(req.body.fullName, 60);
-      const bio = sanitizeMultiline(req.body.bio, 240);
-
-      if (fullName) {
-        user.fullName = fullName;
+      if (username && username !== user.username) {
+        const exists = jsonDb.users.some(
+          (entry) =>
+            String(entry._id) !== String(user._id) &&
+            String(entry.username).toLowerCase() === String(username).toLowerCase()
+        );
+        if (exists) {
+          res.status(409).json({ message: "Bu username allaqachon ishlatilgan." });
+          return;
+        }
+        user.username = username;
       }
 
+      user.fullName = fullName;
       user.bio = bio;
 
       if (req.file) {
@@ -3708,10 +4529,12 @@ app.put("/api/profile", requireAuth, avatarUpload.single("avatar"), async (req, 
       }
 
       await persistJsonDb();
+      const security = await getSecurityOverview(req.session.userId, req.sessionID);
 
       res.json({
         message: "Profil yangilandi.",
         user: serializeUser(user, { includePrivate: true, viewerId: req.session.userId }),
+        security,
       });
       return;
     }
@@ -3722,13 +4545,19 @@ app.put("/api/profile", requireAuth, avatarUpload.single("avatar"), async (req, 
       return;
     }
 
-    const fullName = sanitizeText(req.body.fullName, 60);
-    const bio = sanitizeMultiline(req.body.bio, 240);
-
-    if (fullName) {
-      user.fullName = fullName;
+    if (username && username !== user.username) {
+      const exists = await User.exists({
+        _id: { $ne: user._id },
+        username,
+      });
+      if (exists) {
+        res.status(409).json({ message: "Bu username allaqachon ishlatilgan." });
+        return;
+      }
+      user.username = username;
     }
 
+    user.fullName = fullName;
     user.bio = bio;
 
     if (req.file) {
@@ -3739,10 +4568,106 @@ app.put("/api/profile", requireAuth, avatarUpload.single("avatar"), async (req, 
     }
 
     await user.save();
+    const security = await getSecurityOverview(req.session.userId, req.sessionID);
 
     res.json({
       message: "Profil yangilandi.",
       user: serializeUser(user, { includePrivate: true, viewerId: req.session.userId }),
+      security,
+    });
+  } catch (error) {
+    if (error && error.code === 11000) {
+      res.status(409).json({ message: "Bu username allaqachon ishlatilgan." });
+      return;
+    }
+    next(error);
+  }
+});
+
+app.put("/api/profile/password", requireAuth, async (req, res, next) => {
+  try {
+    const currentPassword = String(req.body.currentPassword || "");
+    const newPassword = String(req.body.newPassword || "");
+
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ message: "Joriy va yangi parolni kiriting." });
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      res.status(400).json({ message: "Yangi parol kamida 6 ta belgidan iborat bo'lsin." });
+      return;
+    }
+
+    if (currentPassword === newPassword) {
+      res.status(400).json({ message: "Yangi parol avvalgisidan farq qilishi kerak." });
+      return;
+    }
+
+    if (DB_MODE === "json") {
+      await loadJsonDb();
+      const user = jsonFindUserById(req.session.userId);
+      if (!user) {
+        res.status(404).json({ message: "Profil topilmadi." });
+        return;
+      }
+
+      const isMatch = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!isMatch) {
+        res.status(401).json({ message: "Joriy parol noto'g'ri." });
+        return;
+      }
+
+      user.passwordHash = await bcrypt.hash(newPassword, 10);
+      await revokeOtherLoginSessions(user._id, req.sessionID);
+      await persistJsonDb();
+
+      res.json({
+        message: "Parol yangilandi. Boshqa qurilmalar chiqarib yuborildi.",
+        security: await getSecurityOverview(req.session.userId, req.sessionID),
+      });
+      return;
+    }
+
+    const user = await User.findById(req.session.userId);
+    if (!user) {
+      res.status(404).json({ message: "Profil topilmadi." });
+      return;
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!isMatch) {
+      res.status(401).json({ message: "Joriy parol noto'g'ri." });
+      return;
+    }
+
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    await revokeOtherLoginSessions(user._id, req.sessionID);
+
+    res.json({
+      message: "Parol yangilandi. Boshqa qurilmalar chiqarib yuborildi.",
+      security: await getSecurityOverview(req.session.userId, req.sessionID),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/security/sessions", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await getSecurityOverview(req.session.userId, req.sessionID));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/security/logout-others", requireAuth, async (req, res, next) => {
+  try {
+    await revokeOtherLoginSessions(req.session.userId, req.sessionID);
+    res.json({
+      message: "Boshqa qurilmalar chiqarib yuborildi.",
+      security: await getSecurityOverview(req.session.userId, req.sessionID),
     });
   } catch (error) {
     next(error);
@@ -4752,6 +5677,7 @@ app.get("/api/health", (req, res) => {
       secure: sessionConfig.cookie.secure,
       sameSite: sessionConfig.cookie.sameSite,
       proxy: sessionConfig.proxy,
+      store: DB_MODE === "mongo" ? "connect-mongo" : "session-file-store",
     },
   });
 });
@@ -4786,6 +5712,11 @@ app.use((error, req, res, next) => {
 });
 
 async function start() {
+  await fs.mkdir(UPLOADS_ROOT, { recursive: true });
+  if (DB_MODE === "json") {
+    await fs.mkdir(SESSIONS_ROOT, { recursive: true });
+  }
+
   if (DB_MODE === "mongo") {
     await mongoose.connect(MONGODB_URI);
   } else {

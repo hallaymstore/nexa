@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NEXA | Chat</title>
-    <meta name="description" content="NEXA real time chat: foydalanuvchilar bilan jonli yozishmalar.">
+    <title>NEXA | Suhbat</title>
+    <meta name="description" content="NEXA suhbat oynasi: oddiy xabarlar, rasm yuborish va bir martalik sirli rasmlar.">
     <link rel="icon" type="image/png" sizes="500x500" href="/media/logo.png">
     <link rel="apple-touch-icon" href="/media/logo.png">
     <link rel="manifest" href="/manifest.webmanifest">
@@ -22,7 +22,7 @@
           <span class="brand-mark"><img src="/media/logo.png" alt="NEXA logo"></span>
           <span class="brand-copy">
             <span>NEXA</span>
-            <small>Jonli chat</small>
+            <small>Suhbat oynasi</small>
           </span>
         </a>
         <div class="topbar-actions" id="topbarActions"></div>
@@ -30,37 +30,38 @@
 
       <main class="page-wrap">
         <section class="hero-card">
-          <span class="eyebrow"><i class="fa-regular fa-paper-plane"></i> Real time chat</span>
-          <h1 class="display-title" style="font-size:2.6rem;">Tez, silliq va jonli yozishmalar</h1>
-          <p class="page-subline">Profilingizdan yoki shu yerning o'zidan yangi suhbat boshlang.</p>
+          <span class="eyebrow"><i class="fa-regular fa-paper-plane"></i> Suhbat</span>
+          <h1 class="display-title" style="font-size:2.6rem;">Tezkor yozishma va media almashish</h1>
+          <p class="page-subline">Oddiy rasm doimiy qoladi, sirli rasm esa faqat bir marta 10 soniya ochiladi.</p>
         </section>
 
-        <section class="chat-layout">
-          <aside class="profile-card chat-sidebar">
-            <div class="section-title">
-              <h2>Suhbatlar</h2>
-            </div>
-            <form id="chatUserSearchForm" class="form-stack mt-0">
-              <div class="search-shell">
-                <i class="fa-solid fa-user-plus"></i>
-                <input class="search-input" id="chatUserSearchInput" type="search" placeholder="Yangi chat uchun username qidiring">
-              </div>
-              <button class="ghost-link" type="submit">Foydalanuvchini topish</button>
-            </form>
-            <div class="search-profile-list mt-3" id="chatUserSearchResults"></div>
-            <div class="chat-room-list mt-3" id="chatRoomsList"></div>
-          </aside>
-
-          <section class="profile-card chat-main">
+        <section class="chat-room-shell">
+          <section class="profile-card chat-main chat-room-panel">
             <div id="chatHeader" class="chat-header"></div>
-            <div id="chatEmptyState" class="empty-state">Suhbatni tanlang yoki yangi foydalanuvchi qidiring.</div>
+            <div id="chatEmptyState" class="empty-state">Suhbat topilmadi. Chatlar ro'yxatidan birini tanlang.</div>
             <div id="chatMessages" class="chat-messages"></div>
             <form id="chatForm" class="chat-composer d-none">
+              <div id="chatComposePreview" class="chat-compose-preview d-none"></div>
               <textarea class="form-control" id="chatInput" rows="2" placeholder="Xabar yozing..."></textarea>
-              <button class="primary-btn" type="submit">
-                <i class="fa-solid fa-paper-plane"></i>
-                <span>Yuborish</span>
-              </button>
+              <div class="chat-composer-foot">
+                <div class="inline-actions">
+                  <input id="chatImageInput" type="file" accept="image/*" hidden>
+                  <input id="chatSecretImageInput" type="file" accept="image/*" hidden>
+                  <button class="ghost-link" type="button" data-action="pick-chat-image">
+                    <i class="fa-regular fa-image"></i>
+                    <span>Rasm</span>
+                  </button>
+                  <button class="soft-btn" type="button" data-action="pick-chat-secret-image">
+                    <i class="fa-solid fa-user-secret"></i>
+                    <span>Sirli rasm</span>
+                  </button>
+                </div>
+                <button class="primary-btn" type="submit">
+                  <i class="fa-solid fa-paper-plane"></i>
+                  <span>Yuborish</span>
+                </button>
+              </div>
+              <div class="helper-text" id="chatComposerTip">Oddiy yoki sirli rasm yuborish uchun suhbatni oching.</div>
             </form>
           </section>
         </section>
@@ -68,6 +69,20 @@
     </div>
 
     <nav class="mobile-nav glass-panel" id="mobileNav"></nav>
+
+    <div id="secretViewer" class="secret-viewer d-none">
+      <div class="secret-viewer-card">
+        <div class="secret-viewer-head">
+          <div class="eyebrow"><i class="fa-solid fa-user-secret"></i> Sirli rasm</div>
+          <button class="icon-btn" id="secretViewerClose" type="button" aria-label="Yopish">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <div class="secret-viewer-timer"><span id="secretViewerTimer">10</span> soniya</div>
+        <img id="secretViewerImage" class="secret-viewer-image" alt="Sirli rasm">
+        <p class="helper-text" id="secretViewerNote">Sirli rasm 10 soniyadan keyin yopiladi.</p>
+      </div>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>

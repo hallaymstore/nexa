@@ -11,7 +11,7 @@
       "username": "demo",
       "fullName": "Demo Foydalanuvchi",
       "email": "demo@nexa.uz",
-      "passwordHash": "$2a$10$HOiG1OaVB7FPJoqGnbrmo.sUDd1BqYWIsR6R6c72PPxzgFdo.IcFG",
+      "passwordHash": "$2a$10$HQ5P2Sw7peNXCgKWP8VpIOpz1seRPAvqoCEp/4JcKIiR54Et2ghV.",
       "bio": "NEXA demo profili. Edit paytida UI va oqimlarni ko'rish uchun.",
       "avatar": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=900&q=80",
       "walletBalance": 0.0155,
@@ -67,23 +67,6 @@
       "avatar": "https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&w=900&q=80",
       "walletBalance": 0,
       "createdAt": "2026-03-16T16:05:10.165Z"
-    },
-    {
-      "_id": "69b83d2dd7fd50a6a9c3fb55",
-      "username": "renderfix17736819657",
-      "fullName": "Render Fix User",
-      "email": "renderfix1773681965714@example.com",
-      "passwordHash": "$2a$10$6eADZINjYmz56iIzUaf/zObCjVvndobpb0V67MG0Q3XDyAC94Mryy",
-      "bio": "",
-      "avatar": "",
-      "followers": [],
-      "following": [],
-      "followersCount": 0,
-      "followingCount": 0,
-      "isAdmin": false,
-      "isBlocked": false,
-      "walletBalance": 0,
-      "createdAt": "2026-03-16T17:26:05.789Z"
     }
   ],
   "posts": [
@@ -270,7 +253,7 @@
   ],
   "meta": {
     "mode": "json",
-    "updatedAt": "2026-03-16T17:26:05.789Z"
+    "updatedAt": "2026-03-16T18:15:48.682Z"
   },
   "chatRooms": [
     {
@@ -296,35 +279,49 @@
   ],
   "chatMessages": [
     {
-      "_id": "69b833a9075e448c113a54a4",
-      "room": "69b833a9075e448c113a54a3",
-      "sender": "69b8210c2edd49c9b5366e01",
+      "type": "text",
       "text": "Assalomu alaykum, yangi platforma juda chiroyli chiqibdi.",
+      "imageUrl": "",
       "readBy": [
         "69b8210c2edd49c9b5366e01",
         "69b8210c2edd49c9b5366e02"
       ],
+      "secretOpenedBy": [],
+      "secretExpiresInSeconds": 10,
+      "_id": "69b833a9075e448c113a54a4",
+      "room": "69b833a9075e448c113a54a3",
+      "sender": "69b8210c2edd49c9b5366e01",
       "createdAt": "2026-03-16T16:45:29.706Z"
     },
     {
+      "type": "text",
+      "text": "Test xabar realtime uchun.",
+      "imageUrl": "",
+      "readBy": [
+        "69b8210c2edd49c9b5366e01",
+        "69b8210c2edd49c9b5366e02"
+      ],
+      "secretOpenedBy": [],
+      "secretExpiresInSeconds": 10,
       "_id": "69b833ab075e448c113a54a5",
       "room": "69b833a9075e448c113a54a3",
       "sender": "69b8210c2edd49c9b5366e01",
-      "text": "Test xabar realtime uchun.",
-      "readBy": [
-        "69b8210c2edd49c9b5366e01"
-      ],
       "createdAt": "2026-03-16T16:45:31.350Z"
     },
     {
-      "_id": "69b8353b040fd265cf171e31",
-      "room": "69b83535040fd265cf171e30",
-      "sender": "69b82a36df992385c3b294cd",
+      "type": "text",
       "text": "salom",
+      "imageUrl": "",
       "readBy": [
         "69b82a36df992385c3b294cd"
       ],
+      "secretOpenedBy": [],
+      "secretExpiresInSeconds": 10,
+      "_id": "69b8353b040fd265cf171e31",
+      "room": "69b83535040fd265cf171e30",
+      "sender": "69b82a36df992385c3b294cd",
       "createdAt": "2026-03-16T16:52:11.030Z"
     }
-  ]
+  ],
+  "loginSessions": []
 }

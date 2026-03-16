@@ -2,6 +2,12 @@ const state = {
   me: null,
   page: document.body.dataset.page || "",
   searchQuery: "",
+  security: null,
+  theme: "light",
+  create: {
+    selectedFiles: [],
+    previewUrls: [],
+  },
   commentsSheetInstance: null,
   currentCommentsPostId: null,
   replyTargets: {
@@ -15,6 +21,12 @@ const state = {
     messages: [],
     socket: null,
     userSearchResults: [],
+    pendingAttachment: null,
+    secretViewer: {
+      timerId: null,
+      remainingSeconds: 0,
+      messageId: null,
+    },
   },
   admin: {
     overview: null,
@@ -38,11 +50,45 @@ const routes = {
   create: "/create.html",
   wallet: "/wallet.html",
   profile: "/profile.html",
+  chats: "/chats.html",
   chat: "/chat.html",
   admin: "/admin.html",
   login: "/login.html",
   register: "/register.html",
 };
+
+const THEME_KEY = "nexa-theme";
+const SECURITY_ALERT_KEY = "nexa-security-alert-shown";
+
+function getPreferredTheme() {
+  try {
+    const storedTheme = localStorage.getItem(THEME_KEY);
+    if (storedTheme === "dark" || storedTheme === "light") {
+      return storedTheme;
+    }
+  } catch (error) {
+    // LocalStorage mavjud bo'lmasa system preference ishlatiladi.
+  }
+
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function applyTheme(theme, persist = true) {
+  const nextTheme = theme === "dark" ? "dark" : "light";
+  state.theme = nextTheme;
+  document.documentElement.setAttribute("data-theme", nextTheme);
+  document.body?.setAttribute("data-theme", nextTheme);
+
+  if (persist) {
+    try {
+      localStorage.setItem(THEME_KEY, nextTheme);
+    } catch (error) {
+      // Ignore storage errors.
+    }
+  }
+}
+
+applyTheme(getPreferredTheme(), false);
 
 function qs(selector, root = document) {
   return root.querySelector(selector);
@@ -93,6 +139,15 @@ function chatUrl(options = {}) {
   return `/chat.html${query ? `?${query}` : ""}`;
 }
 
+function chatsUrl(options = {}) {
+  const params = new URLSearchParams();
+  if (options.query) {
+    params.set("q", options.query);
+  }
+  const query = params.toString();
+  return `/chats.html${query ? `?${query}` : ""}`;
+}
+
 function currentPostIdFromLocation() {
   if (location.pathname.startsWith("/post/")) {
     return decodeURIComponent(location.pathname.replace(/^\/post\//, "").split("/")[0]);
@@ -117,6 +172,10 @@ function currentChatRoomId() {
 
 function currentChatUsername() {
   return new URLSearchParams(location.search).get("user");
+}
+
+function fileFingerprint(file) {
+  return [file?.name || "", file?.size || 0, file?.lastModified || 0, file?.type || ""].join(":");
 }
 
 function updateSearchQuery(nextQuery) {
@@ -180,6 +239,20 @@ function truncate(value = "", max = 90) {
   return `${value.slice(0, max - 1)}...`;
 }
 
+function formatDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "hozir";
+  }
+
+  return date.toLocaleString("uz-UZ", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function showToast(message, type = "default") {
   let shell = qs("#toastShell");
   if (!shell) {
@@ -199,6 +272,15 @@ function showToast(message, type = "default") {
     toast.style.transform = "translateY(-8px)";
     window.setTimeout(() => toast.remove(), 220);
   }, 2800);
+}
+
+function themeToggleMarkup() {
+  const dark = state.theme === "dark";
+  return `
+    <button class="icon-btn theme-toggle" type="button" data-action="toggle-theme" aria-label="${dark ? "Kunduzgi rejim" : "Tungi rejim"}">
+      <i class="fa-solid ${dark ? "fa-sun" : "fa-moon"}"></i>
+    </button>
+  `;
 }
 
 async function api(url, options = {}) {
@@ -242,6 +324,37 @@ function setAuthFeedback(message = "", type = "info") {
   host.innerHTML = `<div class="alert alert-${variant}" role="alert">${escapeHtml(message)}</div>`;
 }
 
+function renderSecuritySessions(security = {}) {
+  const sessions = security.activeSessions || [];
+  if (!sessions.length) {
+    return `<div class="empty-state">Faol sessiyalar topilmadi.</div>`;
+  }
+
+  return `
+    <div class="security-session-list">
+      ${sessions
+        .map(
+          (entry) => `
+            <div class="security-session-item">
+              <div class="author-row">
+                <span class="avatar-mini"><i class="fa-solid ${entry.isCurrent ? "fa-shield-heart" : "fa-laptop"}"></i></span>
+                <div class="author-meta">
+                  <div class="author-name">${escapeHtml(entry.deviceLabel)}</div>
+                  <div class="author-sub">${escapeHtml(entry.browserName)} · ${escapeHtml(entry.osName)} · IP ${escapeHtml(entry.ipAddress || "-")}</div>
+                </div>
+              </div>
+              <div class="security-session-meta">
+                <span class="mini-meta">${entry.isCurrent ? "Joriy qurilma" : "Boshqa qurilma"}</span>
+                <span class="mini-meta">Oxirgi faollik: ${escapeHtml(formatDateTime(entry.lastSeenAt))}</span>
+              </div>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function redirectToLogin() {
   const next = `${location.pathname}${location.search}`;
   location.href = `/login.html?next=${encodeURIComponent(next)}`;
@@ -261,8 +374,19 @@ async function loadMe() {
   try {
     const data = await api("/api/auth/me");
     state.me = data.authenticated ? data.user : null;
+    state.security = data.authenticated ? data.security || null : null;
   } catch (error) {
     state.me = null;
+    state.security = null;
+  }
+
+  if (state.security?.hasOtherActiveSessions) {
+    if (sessionStorage.getItem(SECURITY_ALERT_KEY) !== "1") {
+      showToast("Hisobingiz boshqa qurilmada ham ochiq. Profil -> Xavfsizlik bo'limini tekshiring.", "error");
+      sessionStorage.setItem(SECURITY_ALERT_KEY, "1");
+    }
+  } else {
+    sessionStorage.removeItem(SECURITY_ALERT_KEY);
   }
 
   renderHeaderActions();
@@ -279,10 +403,11 @@ function renderHeaderActions() {
 
   if (state.me) {
     host.innerHTML = `
+      ${themeToggleMarkup()}
       <a class="icon-btn" href="/search.html" aria-label="Qidiruv">
         <i class="fa-solid fa-magnifying-glass"></i>
       </a>
-      <a class="icon-btn" href="/chat.html" aria-label="Chat">
+      <a class="icon-btn" href="/chats.html" aria-label="Chatlar">
         <i class="fa-regular fa-paper-plane"></i>
       </a>
       ${state.me.isAdmin ? `<a class="ghost-link" href="/admin.html"><i class="fa-solid fa-chart-line"></i><span>Admin</span></a>` : ""}
@@ -298,6 +423,7 @@ function renderHeaderActions() {
   }
 
   host.innerHTML = `
+    ${themeToggleMarkup()}
     <a class="icon-btn" href="/search.html" aria-label="Qidiruv">
       <i class="fa-solid fa-magnifying-glass"></i>
     </a>
@@ -361,7 +487,8 @@ function renderDesktopQuickLinks() {
             <a class="soft-btn" href="/create.html"><i class="fa-solid fa-camera"></i> Post joylash</a>
             <a class="ghost-link" href="/wallet.html"><i class="fa-solid fa-wallet"></i> ${money(state.me.walletBalance)}</a>
             <a class="ghost-link" href="/search.html"><i class="fa-solid fa-magnifying-glass"></i> Qidiruv</a>
-            <a class="ghost-link" href="/chat.html"><i class="fa-regular fa-paper-plane"></i> Chat</a>
+            <a class="ghost-link" href="/chats.html"><i class="fa-regular fa-paper-plane"></i> Chatlar</a>
+            <button class="ghost-link" type="button" data-action="toggle-theme"><i class="fa-solid ${state.theme === "dark" ? "fa-sun" : "fa-moon"}"></i> ${state.theme === "dark" ? "Kunduzgi" : "Tungi"} rejim</button>
             ${state.me.isAdmin ? `<a class="ghost-link" href="/admin.html"><i class="fa-solid fa-shield-halved"></i> Boshqaruv</a>` : ""}
           </div>
         </div>
@@ -374,6 +501,7 @@ function renderDesktopQuickLinks() {
           <p class="page-subline">Layk, izoh va javoblar uchun bir necha soniyada hisob yarating.</p>
           <div class="stack-actions">
             <a class="ghost-link" href="/search.html"><i class="fa-solid fa-magnifying-glass"></i> Qidiruv</a>
+            <button class="ghost-link" type="button" data-action="toggle-theme"><i class="fa-solid ${state.theme === "dark" ? "fa-sun" : "fa-moon"}"></i> ${state.theme === "dark" ? "Kunduzgi" : "Tungi"} rejim</button>
             <a class="primary-btn" href="/register.html">Ro'yxatdan o'tish</a>
             <a class="ghost-link" href="/login.html">Kirish</a>
           </div>
@@ -1189,37 +1317,143 @@ function scrollChatMessagesToBottom() {
   host.scrollTop = host.scrollHeight;
 }
 
-function renderChatMessages() {
-  const header = qs("#chatHeader");
-  const host = qs("#chatMessages");
-  const empty = qs("#chatEmptyState");
-  const form = qs("#chatForm");
-  const participant = state.chat.currentRoom?.participant;
+function updateChatRoomState(room) {
+  if (!room) {
+    return;
+  }
 
-  if (!header || !host || !empty || !form) {
+  const exists = state.chat.rooms.some((entry) => entry.id === room.id);
+  state.chat.rooms = exists
+    ? state.chat.rooms.map((entry) => (entry.id === room.id ? { ...entry, ...room } : entry))
+    : [room, ...state.chat.rooms];
+  state.chat.rooms.sort((left, right) => new Date(right.lastMessageAt) - new Date(left.lastMessageAt));
+}
+
+function renderChatMessageContent(message) {
+  if (message.type === "image") {
+    return `
+      <div class="chat-media-card">
+        <img class="chat-media-image" src="${escapeHtml(message.imageUrl)}" alt="Chat rasmi" loading="lazy">
+        ${message.text ? `<div class="chat-bubble-text mt-2">${nl2br(message.text)}</div>` : ""}
+      </div>
+    `;
+  }
+
+  if (message.type === "secret_image") {
+    const mineMeta = message.secret?.openedCount
+      ? `<div class="chat-secret-status success"><i class="fa-solid fa-eye"></i> Ko'rilgan</div>`
+      : `<div class="chat-secret-status"><i class="fa-solid fa-user-secret"></i> Bir martalik rasm</div>`;
+
+    if (message.isMine) {
+      return `
+        <div class="chat-media-card secret-card mine">
+          ${
+            message.imageUrl
+              ? `<img class="chat-media-image chat-media-image-blur" src="${escapeHtml(message.imageUrl)}" alt="Sirli rasm preview" loading="lazy">`
+              : ""
+          }
+          <div class="chat-secret-overlay">
+            <div class="chat-secret-title">Sirli rasm yuborildi</div>
+            <div class="chat-secret-caption">Qabul qiluvchi uni faqat bir marta 10 soniya davomida ko'ra oladi.</div>
+            ${mineMeta}
+          </div>
+          ${message.text ? `<div class="chat-bubble-text mt-2">${nl2br(message.text)}</div>` : ""}
+        </div>
+      `;
+    }
+
+    if (message.secret?.canOpen) {
+      return `
+        <div class="chat-media-card secret-card locked">
+          <div class="chat-secret-overlay">
+            <div class="chat-secret-title">Sirli rasm</div>
+            <div class="chat-secret-caption">Bir marta ochiladi va 10 soniyadan keyin yopiladi.</div>
+            <button class="soft-btn" type="button" data-action="open-secret-image" data-message-id="${message.id}">
+              <i class="fa-solid fa-eye"></i>
+              <span>Bir marta ko'rish</span>
+            </button>
+          </div>
+          ${message.text ? `<div class="chat-bubble-text mt-2">${nl2br(message.text)}</div>` : ""}
+        </div>
+      `;
+    }
+
+    return `
+      <div class="chat-media-card secret-card viewed">
+        <div class="chat-secret-overlay">
+          <div class="chat-secret-title">Sirli rasm ko'rib bo'lindi</div>
+          <div class="chat-secret-caption">Bu rasmni qayta ochib bo'lmaydi.</div>
+          <div class="chat-secret-status success"><i class="fa-solid fa-check"></i> Yopildi</div>
+        </div>
+        ${message.text ? `<div class="chat-bubble-text mt-2">${nl2br(message.text)}</div>` : ""}
+      </div>
+    `;
+  }
+
+  return `<div class="chat-bubble-text">${nl2br(message.text)}</div>`;
+}
+
+function renderChatHeader() {
+  const header = qs("#chatHeader");
+  const participant = state.chat.currentRoom?.participant;
+  if (!header) {
     return;
   }
 
   if (!state.chat.currentRoom) {
-    header.innerHTML = `<div class="section-title"><h2>Chat</h2></div>`;
-    host.innerHTML = "";
-    empty.classList.remove("d-none");
-    form.classList.add("d-none");
+    header.innerHTML = `
+      <div class="section-title">
+        <h2>Chat</h2>
+        ${state.page === "chat" ? `<a class="ghost-link" href="${routes.chats}"><i class="fa-solid fa-arrow-left"></i> Chatlar</a>` : ""}
+      </div>
+    `;
     return;
   }
 
   header.innerHTML = `
-    <div class="author-row">
-      ${avatarMarkup(participant || { username: "?" }, "avatar")}
-      <div class="author-meta">
-        <div class="author-name">${escapeHtml(participant?.fullName || participant?.username || "Chat")}</div>
-        <div class="author-sub">@${escapeHtml(participant?.username || "user")}</div>
+    <div class="chat-header-shell">
+      <div class="author-row">
+        ${state.page === "chat" ? `<button class="icon-btn" type="button" data-action="go-back-chats" aria-label="Orqaga"><i class="fa-solid fa-arrow-left"></i></button>` : ""}
+        ${avatarMarkup(participant || { username: "?" }, "avatar")}
+        <div class="author-meta">
+          <div class="author-name">${escapeHtml(participant?.fullName || participant?.username || "Chat")}</div>
+          <div class="author-sub">@${escapeHtml(participant?.username || "user")}</div>
+        </div>
+      </div>
+      <div class="inline-actions">
+        ${participant?.username ? `<a class="ghost-link" href="${profileUrl(participant.username)}"><i class="fa-regular fa-user"></i> Profil</a>` : ""}
       </div>
     </div>
   `;
+}
+
+function renderChatMessages() {
+  const host = qs("#chatMessages");
+  const empty = qs("#chatEmptyState");
+  const form = qs("#chatForm");
+  const chatTip = qs("#chatComposerTip");
+
+  if (!host || !empty || !form) {
+    return;
+  }
+
+  renderChatHeader();
+
+  if (!state.chat.currentRoom) {
+    host.innerHTML = "";
+    empty.classList.remove("d-none");
+    form.classList.add("d-none");
+    if (chatTip) {
+      chatTip.textContent = "Oddiy yoki sirli rasm yuborish uchun suhbatni oching.";
+    }
+    return;
+  }
 
   empty.classList.add("d-none");
   form.classList.remove("d-none");
+  if (chatTip) {
+    chatTip.textContent = "Oddiy rasm doimiy ko'rinadi, sirli rasm esa bir marta 10 soniya ochiladi.";
+  }
 
   if (!state.chat.messages.length) {
     host.innerHTML = `<div class="empty-state">Suhbat boshlandi. Birinchi xabarni yuboring.</div>`;
@@ -1232,7 +1466,7 @@ function renderChatMessages() {
         <div class="chat-bubble-row ${message.isMine ? "mine" : ""}">
           ${!message.isMine ? avatarMarkup(message.sender, "avatar-mini") : ""}
           <div class="chat-bubble ${message.isMine ? "mine" : ""}">
-            <div class="chat-bubble-text">${nl2br(message.text)}</div>
+            ${renderChatMessageContent(message)}
             <div class="chat-bubble-meta">${timeAgo(message.createdAt)}</div>
           </div>
         </div>
@@ -1258,6 +1492,162 @@ function upsertChatMessage(message) {
   renderChatMessages();
 }
 
+function replaceChatMessage(message) {
+  if (!message || !state.chat.currentRoom || message.roomId !== state.chat.currentRoom.id) {
+    return;
+  }
+
+  const index = state.chat.messages.findIndex((entry) => entry.id === message.id);
+  if (index === -1) {
+    upsertChatMessage(message);
+    return;
+  }
+
+  state.chat.messages[index] = message;
+  renderChatMessages();
+}
+
+function closeSecretViewer() {
+  const modal = qs("#secretViewer");
+  const image = qs("#secretViewerImage");
+  const timer = qs("#secretViewerTimer");
+  const note = qs("#secretViewerNote");
+
+  if (state.chat.secretViewer.timerId) {
+    window.clearInterval(state.chat.secretViewer.timerId);
+  }
+
+  state.chat.secretViewer = {
+    timerId: null,
+    remainingSeconds: 0,
+    messageId: null,
+  };
+
+  if (modal) {
+    modal.classList.add("d-none");
+  }
+  if (image) {
+    image.src = "";
+  }
+  if (timer) {
+    timer.textContent = "10";
+  }
+  if (note) {
+    note.textContent = "Sirli rasm 10 soniyadan keyin yopiladi.";
+  }
+  document.body.classList.remove("secret-view-open");
+}
+
+async function openSecretImage(messageId) {
+  if (!messageId || !state.chat.currentRoom) {
+    return;
+  }
+
+  const modal = qs("#secretViewer");
+  const image = qs("#secretViewerImage");
+  const timer = qs("#secretViewerTimer");
+  const note = qs("#secretViewerNote");
+  if (!modal || !image || !timer || !note) {
+    return;
+  }
+
+  try {
+    const response = await api(`/api/chat/messages/${encodeURIComponent(messageId)}/open-secret`, {
+      method: "POST",
+    });
+
+    replaceChatMessage(response.chatMessage);
+    image.src = response.imageUrl;
+    timer.textContent = String(response.ttlSeconds || 10);
+    note.textContent =
+      "Brauzer oynasi yashirilsa yoki 10 soniya tugasa, rasm yopiladi. Skrinshotni web to'liq bloklay olmaydi.";
+    modal.classList.remove("d-none");
+    document.body.classList.add("secret-view-open");
+
+    state.chat.secretViewer.messageId = messageId;
+    state.chat.secretViewer.remainingSeconds = Number(response.ttlSeconds || 10);
+    if (state.chat.secretViewer.timerId) {
+      window.clearInterval(state.chat.secretViewer.timerId);
+    }
+    state.chat.secretViewer.timerId = window.setInterval(() => {
+      state.chat.secretViewer.remainingSeconds -= 1;
+      timer.textContent = String(Math.max(0, state.chat.secretViewer.remainingSeconds));
+      if (state.chat.secretViewer.remainingSeconds <= 0) {
+        closeSecretViewer();
+      }
+    }, 1000);
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+function clearPendingChatAttachment() {
+  state.chat.pendingAttachment = null;
+  const imageInput = qs("#chatImageInput");
+  const secretInput = qs("#chatSecretImageInput");
+  const preview = qs("#chatComposePreview");
+
+  if (imageInput) {
+    imageInput.value = "";
+  }
+  if (secretInput) {
+    secretInput.value = "";
+  }
+  if (preview) {
+    preview.innerHTML = "";
+    preview.classList.add("d-none");
+  }
+}
+
+function renderPendingChatAttachment() {
+  const preview = qs("#chatComposePreview");
+  const attachment = state.chat.pendingAttachment;
+  if (!preview) {
+    return;
+  }
+
+  if (!attachment?.file) {
+    preview.innerHTML = "";
+    preview.classList.add("d-none");
+    return;
+  }
+
+  const previewUrl = URL.createObjectURL(attachment.file);
+  preview.classList.remove("d-none");
+  preview.innerHTML = `
+    <div class="chat-attachment-card ${attachment.type === "secret_image" ? "secret" : ""}">
+      <img src="${previewUrl}" alt="Yuboriladigan rasm">
+      <div class="chat-attachment-meta">
+        <div class="author-name">${attachment.type === "secret_image" ? "Sirli rasm" : "Oddiy rasm"}</div>
+        <div class="author-sub">${escapeHtml(attachment.file.name || "image")}</div>
+      </div>
+      <button class="icon-btn" type="button" data-action="clear-chat-attachment" aria-label="Biriktirmani olib tashlash">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
+  `;
+
+  const image = qs("img", preview);
+  if (image) {
+    image.addEventListener("load", () => URL.revokeObjectURL(previewUrl), { once: true });
+  } else {
+    URL.revokeObjectURL(previewUrl);
+  }
+}
+
+function setPendingChatAttachment(file, type) {
+  if (!file) {
+    return;
+  }
+
+  validateSelectedFiles([file]);
+  state.chat.pendingAttachment = {
+    file,
+    type,
+  };
+  renderPendingChatAttachment();
+}
+
 function ensureSocketConnection() {
   if (state.chat.socket || typeof io === "undefined" || !state.me) {
     return state.chat.socket;
@@ -1270,23 +1660,15 @@ function ensureSocketConnection() {
     }
   });
   socket.on("chat:new-message", (payload) => {
-    if (
-      state.chat.currentRoom?.id === payload.roomId &&
-      payload.message &&
-      !payload.message.isMine
-    ) {
-      api(`/api/chat/rooms/${payload.roomId}/messages`)
-        .then((response) => {
-          state.chat.currentRoom = response.room;
-          state.chat.messages = response.messages || [];
-          renderChatMessages();
-          return loadChatRooms();
-        })
-        .catch(() => {});
-      return;
+    if (payload.message) {
+      upsertChatMessage(payload.message);
     }
-
-    upsertChatMessage(payload.message);
+    loadChatRooms().catch(() => {});
+  });
+  socket.on("chat:message-updated", (payload) => {
+    if (payload.message) {
+      replaceChatMessage(payload.message);
+    }
     loadChatRooms().catch(() => {});
   });
   socket.on("chat:room-updated", () => {
@@ -1319,9 +1701,12 @@ async function openChatRoom(roomId, options = {}) {
   const response = await api(`/api/chat/rooms/${encodeURIComponent(roomId)}/messages`);
   state.chat.currentRoom = response.room;
   state.chat.messages = response.messages || [];
-  state.chat.rooms = state.chat.rooms.map((room) =>
-    room.id === response.room.id ? { ...room, unreadCount: 0 } : room
-  );
+  state.chat.rooms = state.chat.rooms.map((room) => {
+    if (room.id === response.room.id) {
+      return { ...room, ...response.room, unreadCount: 0 };
+    }
+    return room;
+  });
   renderChatRooms();
   renderChatMessages();
 
@@ -1339,6 +1724,10 @@ async function startChatWithUsername(username) {
     body: { username },
   });
   await loadChatRooms();
+  if (state.page === "chats") {
+    location.href = chatUrl({ roomId: response.room.id });
+    return;
+  }
   await openChatRoom(response.room.id);
 }
 
@@ -1350,18 +1739,34 @@ async function sendChatMessage() {
   }
 
   const text = input.value.trim();
-  if (!text) {
+  const attachment = state.chat.pendingAttachment;
+  if (!text && !attachment) {
     return;
   }
 
   submitButton.disabled = true;
 
   try {
-    const response = await api(`/api/chat/rooms/${state.chat.currentRoom.id}/messages`, {
-      method: "POST",
-      body: { text },
-    });
+    let response;
+    if (attachment) {
+      const formData = new FormData();
+      formData.append("image", attachment.file);
+      formData.append("text", text);
+      formData.append("secret", attachment.type === "secret_image" ? "true" : "false");
+      response = await api(`/api/chat/rooms/${state.chat.currentRoom.id}/messages/image`, {
+        method: "POST",
+        body: formData,
+      });
+      clearPendingChatAttachment();
+    } else {
+      response = await api(`/api/chat/rooms/${state.chat.currentRoom.id}/messages`, {
+        method: "POST",
+        body: { text },
+      });
+    }
+
     upsertChatMessage(response.chatMessage);
+    updateChatRoomState(response.room);
     input.value = "";
     await loadChatRooms();
   } catch (error) {
@@ -1409,27 +1814,149 @@ async function searchUsersForChat(query) {
   }
 }
 
-async function initChatPage() {
+function bindSecretViewerGuards() {
+  if (document.body.dataset.secretGuardBound) {
+    return;
+  }
+
+  document.body.dataset.secretGuardBound = "1";
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden && state.chat.secretViewer.messageId) {
+      closeSecretViewer();
+    }
+  });
+  window.addEventListener("blur", () => {
+    if (state.chat.secretViewer.messageId) {
+      closeSecretViewer();
+    }
+  });
+  document.addEventListener("contextmenu", (event) => {
+    if (state.chat.secretViewer.messageId) {
+      event.preventDefault();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (!state.chat.secretViewer.messageId) {
+      return;
+    }
+    if (event.key === "PrintScreen" || ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "s")) {
+      event.preventDefault();
+      closeSecretViewer();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSecretViewer();
+    }
+  });
+}
+
+function bindChatRoomInteractions() {
+  const header = qs("#chatHeader");
+  const messages = qs("#chatMessages");
+  const imageInput = qs("#chatImageInput");
+  const secretInput = qs("#chatSecretImageInput");
+  const closeSecretButton = qs("#secretViewerClose");
+
+  if (header && !header.dataset.bound) {
+    header.dataset.bound = "1";
+    header.addEventListener("click", (event) => {
+      const backButton = event.target.closest('[data-action="go-back-chats"]');
+      if (!backButton) {
+        return;
+      }
+      if (window.history.length > 1) {
+        window.history.back();
+        return;
+      }
+      location.href = routes.chats;
+    });
+  }
+
+  if (messages && !messages.dataset.bound) {
+    messages.dataset.bound = "1";
+    messages.addEventListener("click", async (event) => {
+      const secretButton = event.target.closest('[data-action="open-secret-image"]');
+      if (secretButton) {
+        await openSecretImage(secretButton.dataset.messageId);
+      }
+    });
+  }
+
+  if (imageInput && !imageInput.dataset.bound) {
+    imageInput.dataset.bound = "1";
+    imageInput.addEventListener("change", () => {
+      const file = imageInput.files?.[0];
+      if (!file) {
+        return;
+      }
+      try {
+        setPendingChatAttachment(file, "image");
+        if (secretInput) {
+          secretInput.value = "";
+        }
+      } catch (error) {
+        showToast(error.message, "error");
+      }
+    });
+  }
+
+  if (secretInput && !secretInput.dataset.bound) {
+    secretInput.dataset.bound = "1";
+    secretInput.addEventListener("change", () => {
+      const file = secretInput.files?.[0];
+      if (!file) {
+        return;
+      }
+      try {
+        setPendingChatAttachment(file, "secret_image");
+        if (imageInput) {
+          imageInput.value = "";
+        }
+      } catch (error) {
+        showToast(error.message, "error");
+      }
+    });
+  }
+
+  const form = qs("#chatForm");
+  if (form && !form.dataset.actionsBound) {
+    form.dataset.actionsBound = "1";
+    form.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-action]");
+      if (!button) {
+        return;
+      }
+
+      if (button.dataset.action === "pick-chat-image") {
+        imageInput?.click();
+      }
+      if (button.dataset.action === "pick-chat-secret-image") {
+        secretInput?.click();
+      }
+      if (button.dataset.action === "clear-chat-attachment") {
+        clearPendingChatAttachment();
+      }
+    });
+  }
+
+  if (closeSecretButton && !closeSecretButton.dataset.bound) {
+    closeSecretButton.dataset.bound = "1";
+    closeSecretButton.addEventListener("click", () => closeSecretViewer());
+  }
+}
+
+async function initChatsPage() {
   if (!state.me) {
     redirectToLogin();
     return;
   }
 
-  const form = qs("#chatForm");
   const userSearchForm = qs("#chatUserSearchForm");
   const userSearchInput = qs("#chatUserSearchInput");
 
   ensureSocketConnection();
   await loadChatRooms();
-  renderChatMessages();
-
-  if (form && !form.dataset.bound) {
-    form.dataset.bound = "1";
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      await sendChatMessage();
-    });
-  }
+  renderChatRooms();
 
   if (userSearchForm && !userSearchForm.dataset.bound) {
     userSearchForm.dataset.bound = "1";
@@ -1439,14 +1966,42 @@ async function initChatPage() {
     });
   }
 
+  const requestedSearch = currentSearchQuery();
+  if (requestedSearch) {
+    if (userSearchInput) {
+      userSearchInput.value = requestedSearch;
+    }
+    await searchUsersForChat(requestedSearch);
+  }
+}
+
+async function initChatPage() {
+  if (!state.me) {
+    redirectToLogin();
+    return;
+  }
+
+  const form = qs("#chatForm");
+  ensureSocketConnection();
+  bindSecretViewerGuards();
+  bindChatRoomInteractions();
+
+  if (form && !form.dataset.bound) {
+    form.dataset.bound = "1";
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await sendChatMessage();
+    });
+  }
+
+  await loadChatRooms();
+  renderChatMessages();
+
   const username = currentChatUsername();
   const roomId = currentChatRoomId();
+
   if (username) {
     await startChatWithUsername(username);
-    const userSearchResults = qs("#chatUserSearchResults");
-    if (userSearchResults) {
-      userSearchResults.innerHTML = "";
-    }
     return;
   }
 
@@ -1456,7 +2011,7 @@ async function initChatPage() {
   }
 
   if (state.chat.rooms[0]) {
-    await openChatRoom(state.chat.rooms[0].id, { pushHistory: false });
+    await openChatRoom(state.chat.rooms[0].id);
   }
 }
 
@@ -1479,27 +2034,75 @@ function validateSelectedFiles(fileList) {
   return files;
 }
 
+function revokeCreatePreviewUrls() {
+  state.create.previewUrls.forEach((url) => URL.revokeObjectURL(url));
+  state.create.previewUrls = [];
+}
+
 function renderCreatePreviews(files) {
   const host = qs("#previewGrid");
   if (!host) {
     return;
   }
 
+  revokeCreatePreviewUrls();
+
   if (!files.length) {
     host.innerHTML = "";
     return;
   }
 
+  const previewUrls = files.map((file) => URL.createObjectURL(file));
+  state.create.previewUrls = previewUrls;
   host.innerHTML = files
     .map(
       (file, index) => `
         <div class="preview-item">
-          <img src="${URL.createObjectURL(file)}" alt="Preview ${index + 1}">
+          <img src="${previewUrls[index]}" alt="Preview ${index + 1}">
           <span>${index + 1}/${files.length}</span>
+          <button class="preview-remove" type="button" data-action="remove-create-image" data-file-index="${index}" aria-label="Rasmni olib tashlash">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
         </div>
       `
     )
     .join("");
+}
+
+function updateCreateHelper() {
+  const helper = qs("#createHelper");
+  if (!helper) {
+    return;
+  }
+
+  if (!state.create.selectedFiles.length) {
+    helper.textContent = "1-5 ta rasm, har biri 5MB gacha";
+    return;
+  }
+
+  const remain = Math.max(0, 5 - state.create.selectedFiles.length);
+  helper.textContent = `${state.create.selectedFiles.length} ta rasm tayyor.${remain ? ` Yana ${remain} ta qo'shishingiz mumkin.` : ""}`;
+}
+
+function mergeCreateFiles(nextFileList) {
+  const merged = [...state.create.selectedFiles];
+  const seen = new Set(merged.map(fileFingerprint));
+
+  Array.from(nextFileList || []).forEach((file) => {
+    const key = fileFingerprint(file);
+    if (!seen.has(key)) {
+      merged.push(file);
+      seen.add(key);
+    }
+  });
+
+  return validateSelectedFiles(merged);
+}
+
+function removeCreateFile(index) {
+  state.create.selectedFiles = state.create.selectedFiles.filter((_, fileIndex) => fileIndex !== index);
+  renderCreatePreviews(state.create.selectedFiles);
+  updateCreateHelper();
 }
 
 async function initCreatePage() {
@@ -1510,19 +2113,33 @@ async function initCreatePage() {
 
   const form = qs("#createForm");
   const input = qs("#imagesInput");
+  const previewGrid = qs("#previewGrid");
   if (!form || !input) {
     return;
   }
 
+  updateCreateHelper();
+
+  if (previewGrid && !previewGrid.dataset.bound) {
+    previewGrid.dataset.bound = "1";
+    previewGrid.addEventListener("click", (event) => {
+      const button = event.target.closest('[data-action="remove-create-image"]');
+      if (!button) {
+        return;
+      }
+      removeCreateFile(Number(button.dataset.fileIndex));
+    });
+  }
+
   input.addEventListener("change", () => {
     try {
-      const files = validateSelectedFiles(input.files);
-      renderCreatePreviews(files);
-      qs("#createHelper").textContent = `${files.length} ta rasm tayyor.`;
+      state.create.selectedFiles = mergeCreateFiles(input.files);
+      renderCreatePreviews(state.create.selectedFiles);
+      updateCreateHelper();
+      input.value = "";
     } catch (error) {
       input.value = "";
-      renderCreatePreviews([]);
-      qs("#createHelper").textContent = error.message;
+      updateCreateHelper();
       showToast(error.message, "error");
     }
   });
@@ -1532,7 +2149,7 @@ async function initCreatePage() {
 
     let files;
     try {
-      files = validateSelectedFiles(input.files);
+      files = validateSelectedFiles(state.create.selectedFiles);
     } catch (error) {
       showToast(error.message, "error");
       return;
@@ -1550,6 +2167,9 @@ async function initCreatePage() {
       });
 
       showToast("Post joylandi.", "success");
+      state.create.selectedFiles = [];
+      renderCreatePreviews([]);
+      updateCreateHelper();
       location.href = postUrl(response.post.id);
     } catch (error) {
       showToast(error.message, "error");
@@ -1597,6 +2217,7 @@ async function initAuthPage(type) {
         body: payload,
       });
       state.me = result.user || null;
+      state.security = result.security || null;
 
       const authState = await api("/api/auth/me");
       if (!authState?.authenticated) {
@@ -1621,7 +2242,7 @@ async function initAuthPage(type) {
   });
 }
 
-function renderProfileHeader(user, stats, editable) {
+function renderProfileHeader(user, stats, editable, security = null) {
   const host = qs("#profileHero");
   if (!host) {
     return;
@@ -1675,6 +2296,10 @@ function renderProfileHeader(user, stats, editable) {
             </div>
             <form id="profileEditForm" class="form-stack">
               <div>
+                <label class="field-label">Username</label>
+                <input class="form-control" type="text" name="username" value="${escapeHtml(user.username)}" maxlength="20">
+              </div>
+              <div>
                 <label class="field-label">To'liq ism</label>
                 <input class="form-control" type="text" name="fullName" value="${escapeHtml(user.fullName)}" maxlength="60">
               </div>
@@ -1687,6 +2312,46 @@ function renderProfileHeader(user, stats, editable) {
                 <input class="form-control" type="file" name="avatar" accept="image/*">
               </div>
               <button class="primary-btn" type="submit">Saqlash</button>
+            </form>
+          </div>
+          <div class="profile-card">
+            <div class="section-title">
+              <h3>Xavfsizlik</h3>
+            </div>
+            ${
+              security?.hasOtherActiveSessions
+                ? `<div class="security-alert">
+                     <strong>Boshqa qurilmada ham kirilgan</strong>
+                     <span>${escapeHtml(security.recommendation || "Boshqa sessiyalarni chiqarish va parolni yangilash tavsiya etiladi.")}</span>
+                   </div>`
+                : `<div class="helper-text">Sessiyalar nazorati shu yerda ko'rinadi.</div>`
+            }
+            <div class="inline-actions mt-3">
+              <button class="soft-btn" type="button" id="logoutOtherSessionsButton" ${security?.hasOtherActiveSessions ? "" : "disabled"}>
+                <i class="fa-solid fa-arrow-right-from-bracket"></i>
+                <span>Boshqa qurilmalarni chiqarish</span>
+              </button>
+            </div>
+            <div class="mt-3">
+              ${renderSecuritySessions(security || {})}
+            </div>
+            <div class="section-title mt-4">
+              <h3>Parolni yangilash</h3>
+            </div>
+            <form id="passwordChangeForm" class="form-stack">
+              <div>
+                <label class="field-label">Joriy parol</label>
+                <input class="form-control" type="password" name="currentPassword" placeholder="Joriy parol">
+              </div>
+              <div>
+                <label class="field-label">Yangi parol</label>
+                <input class="form-control" type="password" name="newPassword" placeholder="Kamida 6 belgi">
+              </div>
+              <div>
+                <label class="field-label">Yangi parolni tasdiqlang</label>
+                <input class="form-control" type="password" name="confirmPassword" placeholder="Yangi parolni qayta kiriting">
+              </div>
+              <button class="primary-btn" type="submit">Parolni yangilash</button>
             </form>
           </div>
         `
@@ -1730,32 +2395,94 @@ function renderProfilePosts(posts) {
 
 async function bindProfileEditForm() {
   const form = qs("#profileEditForm");
-  if (!form) {
-    return;
+  const passwordForm = qs("#passwordChangeForm");
+  const logoutOthersButton = qs("#logoutOtherSessionsButton");
+
+  if (form && !form.dataset.bound) {
+    form.dataset.bound = "1";
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitButton = qs('[type="submit"]', form);
+      submitButton.disabled = true;
+
+      try {
+        const formData = new FormData(form);
+        const response = await api("/api/profile", {
+          method: "PUT",
+          body: formData,
+        });
+        state.me = response.user;
+        state.security = response.security || state.security;
+        renderHeaderActions();
+        renderBottomNav();
+        renderDesktopQuickLinks();
+        if (location.pathname.startsWith("/u/")) {
+          history.replaceState({}, "", profileUrl(response.user.username));
+        }
+        showToast("Profil yangilandi.", "success");
+        await initProfilePage();
+      } catch (error) {
+        showToast(error.message, "error");
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
   }
 
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const submitButton = qs('[type="submit"]', form);
-    submitButton.disabled = true;
+  if (passwordForm && !passwordForm.dataset.bound) {
+    passwordForm.dataset.bound = "1";
+    passwordForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submitButton = qs('[type="submit"]', passwordForm);
+      const currentPassword = qs('[name="currentPassword"]', passwordForm)?.value || "";
+      const newPassword = qs('[name="newPassword"]', passwordForm)?.value || "";
+      const confirmPassword = qs('[name="confirmPassword"]', passwordForm)?.value || "";
 
-    try {
-      const formData = new FormData(form);
-      const response = await api("/api/profile", {
-        method: "PUT",
-        body: formData,
-      });
-      state.me = response.user;
-      renderHeaderActions();
-      renderDesktopQuickLinks();
-      showToast("Profil yangilandi.", "success");
-      await initProfilePage();
-    } catch (error) {
-      showToast(error.message, "error");
-    } finally {
-      submitButton.disabled = false;
-    }
-  });
+      if (newPassword !== confirmPassword) {
+        showToast("Yangi parollar bir xil emas.", "error");
+        return;
+      }
+
+      submitButton.disabled = true;
+
+      try {
+        const response = await api("/api/profile/password", {
+          method: "PUT",
+          body: {
+            currentPassword,
+            newPassword,
+          },
+        });
+        state.security = response.security || state.security;
+        passwordForm.reset();
+        showToast(response.message || "Parol yangilandi.", "success");
+        await initProfilePage();
+      } catch (error) {
+        showToast(error.message, "error");
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+  }
+
+  if (logoutOthersButton && !logoutOthersButton.dataset.bound) {
+    logoutOthersButton.dataset.bound = "1";
+    logoutOthersButton.addEventListener("click", async () => {
+      logoutOthersButton.disabled = true;
+      try {
+        const response = await api("/api/security/logout-others", {
+          method: "POST",
+        });
+        state.security = response.security || state.security;
+        showToast(response.message || "Boshqa qurilmalar chiqarildi.", "success");
+        await initProfilePage();
+      } catch (error) {
+        showToast(error.message, "error");
+      } finally {
+        logoutOthersButton.disabled = false;
+      }
+    });
+  }
 }
 
 async function toggleFollow(button) {
@@ -1814,7 +2541,8 @@ async function initProfilePage() {
           posts: postsPayload.posts,
         }));
 
-    renderProfileHeader(response.user, response.stats, editable);
+    state.security = editable ? response.security || state.security : state.security;
+    renderProfileHeader(response.user, response.stats, editable, editable ? response.security : null);
     renderProfilePosts(response.posts || []);
     await bindProfileEditForm();
   } catch (error) {
@@ -2594,6 +3322,17 @@ function bindGlobalEvents() {
       return;
     }
 
+    if (action === "toggle-theme") {
+      applyTheme(state.theme === "dark" ? "light" : "dark");
+      renderHeaderActions();
+      renderDesktopQuickLinks();
+      showToast(
+        state.theme === "dark" ? "Tungi rejim yoqildi." : "Kunduzgi rejim yoqildi.",
+        "success"
+      );
+      return;
+    }
+
     if (action === "toggle-like") {
       await togglePostLike(button);
       return;
@@ -2632,6 +3371,10 @@ function bindGlobalEvents() {
     }
 
     if (action === "open-chat-room") {
+      if (state.page === "chats") {
+        location.href = chatUrl({ roomId: button.dataset.roomId });
+        return;
+      }
       await openChatRoom(button.dataset.roomId);
       return;
     }
@@ -2766,6 +3509,7 @@ function bindHomeSearch() {
 }
 
 async function initPage() {
+  applyTheme(state.theme, false);
   await loadMe();
   bindGlobalEvents();
   bindRefreshActions();
@@ -2777,6 +3521,10 @@ async function initPage() {
 
   if (state.page === "search") {
     await initSearchPage();
+  }
+
+  if (state.page === "chats") {
+    await initChatsPage();
   }
 
   if (state.page === "create") {
