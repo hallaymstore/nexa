@@ -23,12 +23,14 @@ const MONEY_STEP = 0.0005;
 const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
 const MONGODB_URI = process.env.MONGODB_URI || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || "nexa-dev-session";
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
 const DB_MODE = MONGODB_URI ? "mongo" : "json";
 const SITE_URL = (process.env.SITE_URL || `http://localhost:${PORT}`).replace(/\/+$/, "");
 const GOOGLE_SITE_VERIFICATION = process.env.GOOGLE_SITE_VERIFICATION || "";
 const BING_SITE_VERIFICATION = process.env.BING_SITE_VERIFICATION || "";
 const JSON_DB_PATH = path.join(__dirname, "fallback-db.json");
 const UPLOADS_ROOT = path.join(__dirname, "public", "uploads");
+let lastMongoError = "";
 const CLOUDINARY_READY = Boolean(
   process.env.CLOUDINARY_CLOUD_NAME &&
     process.env.CLOUDINARY_API_KEY &&
@@ -41,6 +43,22 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
   secure: true,
 });
+
+if (MONGODB_URI) {
+  mongoose.connection.on("connected", () => {
+    lastMongoError = "";
+    console.log("MongoDB ulandi.");
+  });
+
+  mongoose.connection.on("disconnected", () => {
+    console.warn("MongoDB ulanishi uzildi.");
+  });
+
+  mongoose.connection.on("error", (error) => {
+    lastMongoError = error?.message || "MongoDB xatosi";
+    console.error("MongoDB xatosi:", lastMongoError);
+  });
+}
 
 let jsonDb = null;
 
@@ -344,14 +362,17 @@ const ChatMessage = mongoose.model("ChatMessage", chatMessageSchema);
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
+app.set("trust proxy", 1);
 const sessionConfig = {
+  name: "nexa.sid",
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+  proxy: IS_PRODUCTION,
   cookie: {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: IS_PRODUCTION ? "auto" : false,
     maxAge: SESSION_TTL,
   },
 };
@@ -546,6 +567,41 @@ function ensureImpressionCache(req) {
   if (req.session.countedAdImpressions.length > 500) {
     req.session.countedAdImpressions = req.session.countedAdImpressions.slice(-250);
   }
+}
+
+function saveSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.save((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function destroySession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.destroy((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function mongoStateLabel(readyState) {
+  const states = {
+    0: "uzilgan",
+    1: "ulangan",
+    2: "ulanmoqda",
+    3: "uzilmoqda",
+  };
+
+  return states[readyState] || "noma'lum";
 }
 
 async function fetchUserById(id) {
@@ -2670,6 +2726,7 @@ app.post("/api/auth/register", async (req, res, next) => {
 
       req.session.userId = String(user._id);
       req.session.countedAdImpressions = [];
+      await saveSession(req);
 
       res.status(201).json({
         message: "Hisob muvaffaqiyatli yaratildi.",
@@ -2697,6 +2754,7 @@ app.post("/api/auth/register", async (req, res, next) => {
 
     req.session.userId = String(user._id);
     req.session.countedAdImpressions = [];
+    await saveSession(req);
 
     res.status(201).json({
       message: "Hisob muvaffaqiyatli yaratildi.",
@@ -2748,6 +2806,7 @@ app.post("/api/auth/login", async (req, res, next) => {
 
       req.session.userId = String(user._id);
       ensureImpressionCache(req);
+      await saveSession(req);
 
       res.json({
         message: "Xush kelibsiz!",
@@ -2778,6 +2837,7 @@ app.post("/api/auth/login", async (req, res, next) => {
 
     req.session.userId = String(user._id);
     ensureImpressionCache(req);
+    await saveSession(req);
 
     res.json({
       message: "Xush kelibsiz!",
@@ -2788,15 +2848,15 @@ app.post("/api/auth/login", async (req, res, next) => {
   }
 });
 
-app.post("/api/auth/logout", (req, res, next) => {
-  req.session.destroy((error) => {
-    if (error) {
-      next(error);
-      return;
-    }
+app.post("/api/auth/logout", async (req, res, next) => {
+  try {
+    await destroySession(req);
+    res.clearCookie("nexa.sid");
     res.clearCookie("connect.sid");
     res.json({ message: "Hisobdan chiqildi." });
-  });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/api/posts/recommended", async (req, res, next) => {
@@ -4664,7 +4724,36 @@ app.get("/u/:username", async (req, res, next) => {
 });
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, cloudinaryReady: CLOUDINARY_READY, dbMode: DB_MODE });
+  const mongoReadyState = mongoose.connection.readyState;
+  const mongoConnected = DB_MODE === "mongo" ? mongoReadyState === 1 : false;
+
+  res.json({
+    ok: DB_MODE === "json" || mongoConnected,
+    app: "NEXA",
+    db: {
+      mode: DB_MODE,
+      connected: DB_MODE === "json" ? true : mongoConnected,
+      readyState: DB_MODE === "json" ? null : mongoReadyState,
+      stateLabel: DB_MODE === "json" ? "json-fallback" : mongoStateLabel(mongoReadyState),
+      message:
+        DB_MODE === "json"
+          ? "Fallback JSON rejimi faol."
+          : mongoConnected
+            ? "MongoDB ulangan."
+            : "MongoDB ulanmagan.",
+      lastError: lastMongoError || null,
+    },
+    cloudinary: {
+      ready: CLOUDINARY_READY,
+      provider: CLOUDINARY_READY ? "cloudinary" : "local-upload",
+    },
+    session: {
+      cookieName: sessionConfig.name,
+      secure: sessionConfig.cookie.secure,
+      sameSite: sessionConfig.cookie.sameSite,
+      proxy: sessionConfig.proxy,
+    },
+  });
 });
 
 app.use((req, res) => {
@@ -4708,8 +4797,15 @@ async function start() {
   server.listen(PORT, () => {
     console.log(`NEXA ishga tushdi: http://localhost:${PORT}`);
     console.log(`Ma'lumotlar rejimi: ${DB_MODE}`);
+    if (DB_MODE === "mongo") {
+      console.log(`MongoDB holati: ${mongoStateLabel(mongoose.connection.readyState)}`);
+    }
+    console.log(`Health endpoint: ${SITE_URL}/api/health`);
     if (!process.env.SESSION_SECRET) {
       console.log("Diqqat: SESSION_SECRET topilmadi, vaqtinchalik dev secret ishlatildi.");
+    }
+    if (IS_PRODUCTION) {
+      console.log("Session cookie rejimi: secure=auto, trust proxy yoqilgan.");
     }
     if (!CLOUDINARY_READY) {
       console.log("Diqqat: Cloudinary sozlanmagan. Rasm yuklash local /public/uploads ga saqlanadi.");

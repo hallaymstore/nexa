@@ -204,6 +204,7 @@ function showToast(message, type = "default") {
 async function api(url, options = {}) {
   const config = { ...options };
   config.method = config.method || "GET";
+  config.credentials = config.credentials || "same-origin";
   config.headers = config.headers ? { ...config.headers } : {};
 
   if (config.body && !(config.body instanceof FormData)) {
@@ -222,6 +223,23 @@ async function api(url, options = {}) {
   }
 
   return payload;
+}
+
+function setAuthFeedback(message = "", type = "info") {
+  const host = qs("#authFeedback");
+  if (!host) {
+    return;
+  }
+
+  if (!message) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+
+  const variant = type === "error" ? "danger" : type;
+  host.hidden = false;
+  host.innerHTML = `<div class="alert alert-${variant}" role="alert">${escapeHtml(message)}</div>`;
 }
 
 function redirectToLogin() {
@@ -1555,7 +1573,10 @@ async function initAuthPage(type) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const submitButton = qs('[type="submit"]', form);
+    const originalText = submitButton.textContent;
     submitButton.disabled = true;
+    submitButton.textContent = type === "login" ? "Kirilmoqda..." : "Yaratilmoqda...";
+    setAuthFeedback("");
 
     try {
       const payload =
@@ -1571,17 +1592,31 @@ async function initAuthPage(type) {
               password: qs('[name="password"]', form).value,
             };
 
-      await api(type === "login" ? "/api/auth/login" : "/api/auth/register", {
+      const result = await api(type === "login" ? "/api/auth/login" : "/api/auth/register", {
         method: "POST",
         body: payload,
       });
+      state.me = result.user || null;
+
+      const authState = await api("/api/auth/me");
+      if (!authState?.authenticated) {
+        throw new Error(
+          "Sessiya saqlanmadi. Server cookie'ni yozmadi yoki proxy sozlamasi noto'g'ri."
+        );
+      }
 
       const next = new URLSearchParams(location.search).get("next");
-      location.href = next || "/";
+      setAuthFeedback(result.message || "Muvaffaqiyatli bajarildi.", "success");
+      showToast(result.message || "Muvaffaqiyatli bajarildi.", "success");
+      window.setTimeout(() => {
+        location.href = next || "/";
+      }, 180);
     } catch (error) {
+      setAuthFeedback(error.message, "error");
       showToast(error.message, "error");
     } finally {
       submitButton.disabled = false;
+      submitButton.textContent = originalText;
     }
   });
 }
